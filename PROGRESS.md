@@ -21,16 +21,16 @@ end of every session — a fresh session has no memory of prior ones beyond what
 | B2 | Pipeline (Phase 1/2/3 + sandbox + single retry) | done + tested | `llm/sandbox.py` (allowlist-based sqlglot validation, 38 exploit tests), `llm/client.py` (Gemini->Groq failover, 9 mocked tests), `llm/pipeline.py` (Phase 1/2/3 + single retry + graceful "unanswerable" handling, 5 integration tests). |
 | B3 | Insight generation (3 preset prompts) | done + tested | `llm/pipeline.py`: `generate_dataset_overview` (fully generic, no config needed), `generate_trend_comparison` (dims/metrics/aggs from `configs/dataset_config.yaml`'s new `insights.trend_comparison`), `generate_anomaly_report` (reuses A3's IQR profiling, picks the worst-outlier column at runtime -- data-driven, not hardcoded). 3 new tests. |
 | B4 | Conversational context (last-5-turn memory) | done + tested | `llm/memory.py`: `ConversationMemory` wraps a plain list (storage-agnostic -- Task C backs an instance with `st.session_state`), `add`/`get_history`/`reset`. 4 new tests (eviction beyond 5 turns, reset, defensive copy on read). |
-| B5 | Reliability (validation, loading indicator, Gemini->Groq failover) | in progress | Validation/failover/timing/logging done and **live-proven** (see B1 note above) -- also caught and fixed a real bug this way: google-genai's internal retry (tenacity) can re-raise a raw `httpx.ReadTimeout` that does NOT subclass the builtin `TimeoutError`, which crashed the whole request instead of falling back to Groq until `_GEMINI_SDK_ERRORS` was widened to include `httpx.HTTPError` (regression test added). Still open: the loading-indicator UI itself is Task C's job (`app.py` doesn't exist yet). |
+| B5 | Reliability (validation, loading indicator, Gemini->Groq failover) | done + tested | Validation/failover/timing/logging done and **live-proven** (see B1 note above) -- also caught and fixed a real bug this way: google-genai's internal retry (tenacity) can re-raise a raw `httpx.ReadTimeout` that does NOT subclass the builtin `TimeoutError`, which crashed the whole request instead of falling back to Groq until `_GEMINI_SDK_ERRORS` was widened to include `httpx.HTTPError` (regression test added). Closed out by C1: the loading indicator is `st.status` in `app/app.py`, showing elapsed time and which provider served the answer. |
 
 ## Task C — Dashboard (2.0 marks)
 
 | ID | Subtask | Status | Notes |
 |----|---------|--------|-------|
-| C1 | Architecture (`st.tabs()`, sidebar filters, session state) | not started | |
-| C2 | Visualization suite (>=6 chart types) | not started | |
-| C3 | AI-driven visualization (shape -> chart-type auto-select) | not started | |
-| C4 | Export (PDF, Word, PNG/SVG) | not started | |
+| C1 | Architecture (`st.tabs()`, sidebar filters, session state) | done + tested | `app/app.py`: 3 tabs (Overview / Exploration / AI Assistant), config-driven sidebar filters (date range + 3 multiselects), `st.session_state` for filters/memory/answers, `@st.cache_resource` so the 51k-row ingest runs once per process rather than per rerun. 8 `AppTest` smoke tests. |
+| C2 | Visualization suite (>=6 chart types) | done + tested | All 7 built in `viz/charts.py` (time series, choropleth, correlation heatmap, box plot, sunburst, scatter+regression, stacked bar with drill-down). Bindings + a CVD-validated palette live in `configs/dataset_config.yaml`. |
+| C3 | AI-driven visualization (shape -> chart-type auto-select) | done + tested | `viz/auto_select.py` keys off result shape only (proven by a test that feeds identical shapes under different column names); UI dropdown allows manual override; each AI chart carries a caption explaining the selection. |
+| C4 | Export (PDF, Word, PNG/SVG) | done + tested | `export/pdf_export.py` + `export/docx_export.py` (metadata, filters, narrative, chart image, result table, SQL), plus per-chart PNG/SVG. All generated on demand behind a "Prepare" button -- see the perf note in the session log. |
 
 ## Task D — Advanced features (1.5 marks)
 
@@ -68,3 +68,26 @@ end of every session — a fresh session has no memory of prior ones beyond what
   added. 90 tests passing overall. B1/B2/B3/B4 done + tested; B5's backend logic is
   done and live-proven, only the UI loading indicator (Task C's job) remains open.
   Tasks C/D not started.
+- 2026-08-11: Task C (C1-C4) implemented and tested, 3 commits. 134 tests passing.
+  This also closed out B5 (its loading indicator is `st.status` in `app/app.py`).
+  Three real problems found by rendering/running rather than trusting tests:
+  (1) the box plot was unreadable -- profit quartiles sit within a few hundred of
+  zero while extremes reach +/-8400, so an auto-scaled y-axis collapsed every box
+  into a flat line; fixed by scoping the axis to the 1.5*IQR whisker range.
+  (2) A serious perf bug: chart PNG/SVG and PDF/Word reports were built eagerly on
+  every Streamlit rerun, and each shells out to kaleido (~1s), so one keystroke
+  cost 10+ seconds. Now generated on demand behind a "Prepare" button; a plain
+  rerun went from 10+s to ~0.5s, with a regression test asserting the bound.
+  (3) `use_container_width` is past its removal date in Streamlit 1.61 -- switched
+  all 17 uses to `width='stretch'`.
+  Note on the spec's dual-axis time series (C2): built as specified, since the spec
+  is the grading authority, but the known tradeoff is documented in the function's
+  docstring -- where the two lines cross is an artifact of independent axis scaling,
+  not a fact about the data. Worth being ready to discuss in Q&A.
+  Live end-to-end verified in the running app (question -> Groq fallback -> correct
+  narrative -> auto-selected bar chart); that test is marked `live_llm` and
+  excluded from the default suite via `pytest.ini` so CI doesn't burn API quota.
+  Caveat: verification was via Streamlit's `AppTest` (which really executes the app)
+  plus direct chart-image rendering -- no browser automation tool was available, so
+  the UI has not been eyeballed in an actual browser. Worth a manual look.
+  Task D not started.
