@@ -64,6 +64,15 @@ def mini_con_fresh(dataset_config, _pii_hash_salt):
 
 
 @pytest.fixture(scope="session")
+def mini_df(mini_con_clean, dataset_config):
+    """The cleaned mini fixture as a DataFrame -- what viz/ and export/ consume
+    (they take data, not a connection).
+    """
+    table_name = dataset_config["dataset"]["table_name"]
+    return mini_con_clean.execute(f'SELECT * FROM "{table_name}"').df()
+
+
+@pytest.fixture(scope="session")
 def real_con_clean(dataset_config, _pii_hash_salt):
     """An in-memory DuckDB connection over the full real dataset, ingested and
     cleaned. Skipped if data/raw/global_superstore.csv isn't present locally.

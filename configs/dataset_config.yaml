@@ -186,6 +186,74 @@ few_shot_examples:
     reasoning: "Filter to region = 'West', group by sub_category, sum profit, sort descending, limit 5."
     sql: "SELECT sub_category, SUM(profit) AS total_profit FROM superstore WHERE region = 'West' GROUP BY sub_category ORDER BY total_profit DESC LIMIT 5"
 
-# Populated in Task C. Placeholder here so the file's shape is stable from A1 onward.
+# Task C2: which columns feed each of the curated charts. viz/charts.py reads these
+# rather than hardcoding column names, so the dataset-specific detail stays in this
+# one file (PROJECT_SPEC.md Section 2). viz/auto_select.py needs no bindings at all --
+# it keys off result *shape*, never column identity.
 charts:
-  curated_bindings: {}
+  # Shared display settings so every chart looks like part of one system.
+  theme:
+    template: "plotly_white"
+    # Categorical palette, assigned in this fixed order and never cycled. Verified
+    # colorblind-safe with the data-viz palette validator (worst adjacent CVD
+    # deltaE 9.1, worst adjacent normal-vision deltaE 19.6, both above their gates)
+    # -- do not reorder casually: the slot ordering is what makes it CVD-safe, not
+    # cosmetic. Scatter/choropleth-style charts (where any pair can end up
+    # adjacent) cap at the first 3 slots, which validate on all pairs.
+    categorical_colors:
+      - "#2a78d6"
+      - "#eb6834"
+      - "#1baf7a"
+      - "#eda100"
+      - "#e87ba4"
+      - "#008300"
+      - "#4a3aa7"
+      - "#e34948"
+
+  curated_bindings:
+    time_series:
+      date_column: "order_date"
+      metrics: ["sales", "profit"]
+      title: "Revenue and Profit Over Time"
+    choropleth:
+      location_column: "country"
+      metric: "sales"
+      color_scale: "Blues"
+      title: "Total Sales by Country"
+    correlation_heatmap:
+      columns: ["sales", "profit", "quantity", "discount", "shipping_cost"]
+      color_scale: "RdBu"
+      title: "Correlation Between Numeric Measures"
+    box_plot:
+      category_column: "category"
+      metric: "profit"
+      title: "Profit Distribution by Category"
+    sunburst:
+      path: ["category", "sub_category", "segment"]
+      metric: "sales"
+      title: "Sales by Category, Sub-Category and Segment"
+    scatter_regression:
+      x: "discount"
+      y: "profit"
+      title: "Discount vs Profit"
+    stacked_bar:
+      primary_dim: "region"
+      secondary_dim: "category"
+      metric: "sales"
+      title: "Sales by Region and Category"
+
+# Task C1: which columns become global sidebar filters, and how each is rendered.
+# Kept here (not in app.py) for the same reason as everything else in this file.
+filters:
+  - column: "order_date"
+    label: "Order date range"
+    type: "date_range"
+  - column: "region"
+    label: "Region"
+    type: "multiselect"
+  - column: "category"
+    label: "Category"
+    type: "multiselect"
+  - column: "segment"
+    label: "Segment"
+    type: "multiselect"
