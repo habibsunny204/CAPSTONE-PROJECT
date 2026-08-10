@@ -16,66 +16,16 @@ from __future__ import annotations
 
 import datetime
 import json
-import math
 from pathlib import Path
 from typing import Any
 
 from backend import ingest, quality
+from eval import scoring
 from llm import pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUESTIONS_PATH = REPO_ROOT / "eval" / "benchmark_questions.json"
 RESULTS_DIR = REPO_ROOT / "eval" / "results"
-
-NUMERIC_REL_TOL = 0.02
-
-
-def _numeric_match(actual: Any, expected: float) -> bool:
-    """Whether `actual` is numerically close enough to `expected` to count as a
-    match, tolerating both relative (2%) and small absolute differences (rounding).
-    """
-    try:
-        return math.isclose(float(actual), float(expected), rel_tol=NUMERIC_REL_TOL, abs_tol=0.01)
-    except (TypeError, ValueError):
-        return False
-
-
-def _score_out_of_scope(question: dict[str, Any], result: pipeline.PipelineResult | None, error: Exception | None) -> dict[str, Any]:
-    """Out-of-scope questions pass if the system declines gracefully (ground truth
-    "unanswerable": sql=="" or a clean PipelineError) or returns a genuinely empty
-    result (ground truth "empty result (0 rows)") -- either way, not a hallucinated
-    non-empty answer.
-    """
-    gt = question["ground_truth"]
-    if gt == "unanswerable":
-        passed = error is not None or (result is not None and result.sql == "")
-    else:
-        passed = result is not None and result.result.empty
-    return {"passed": passed, "method": "out_of_scope_graceful_check"}
-
-
-def _score_answerable(question: dict[str, Any], result: pipeline.PipelineResult | None, error: Exception | None) -> dict[str, Any]:
-    """Scalar ground truth passes if any cell in the result is numerically close.
-    Dict ground truth (e.g. a per-category breakdown) passes if every numeric value
-    in it is found somewhere in the result. Loose by design -- see module docstring.
-    """
-    if result is None:
-        return {"passed": False, "method": "pipeline_error", "detail": str(error)}
-
-    gt = question["ground_truth"]
-    values = result.result.values.flatten().tolist() if not result.result.empty else []
-
-    if isinstance(gt, (int, float)):
-        return {"passed": any(_numeric_match(v, gt) for v in values), "method": "scalar_numeric_match"}
-
-    if isinstance(gt, dict):
-        numeric_targets = [v for v in gt.values() if isinstance(v, (int, float))]
-        matched = sum(1 for t in numeric_targets if any(_numeric_match(v, t) for v in values))
-        passed = bool(numeric_targets) and matched == len(numeric_targets)
-        return {"passed": passed, "method": "dict_numeric_match", "matched": matched, "of": len(numeric_targets)}
-
-    return {"passed": False, "method": "unrecognized_ground_truth_shape"}
-
 
 def run() -> dict[str, Any]:
     """Ingest+clean the full dataset, run every benchmark question through the live
@@ -112,11 +62,7 @@ def run() -> dict[str, Any]:
             error = e
             entry["error"] = str(e)
 
-        score = (
-            _score_out_of_scope(q, pipeline_result, error)
-            if q["category"] == "out_of_scope"
-            else _score_answerable(q, pipeline_result, error)
-        )
+        score = scoring.score_question(q, pipeline_result, error)
         entry["passed"] = score["passed"]
         entry["score_method"] = score.get("method")
         n_passed += int(score["passed"])

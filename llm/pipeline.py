@@ -86,12 +86,15 @@ def _generate_sql(
     config: dict[str, Any],
     question: str,
     history_text: str,
+    prompt_options: dict[str, Any] | None = None,
 ) -> tuple[str, str, str, list[dict[str, Any]]]:
     """Phase 1: ask the LLM for SQL. Returns (sql, reasoning, provider, live_schema)
     -- the schema is returned too so a retry doesn't need to re-introspect it.
     """
     live_schema = schema_module.get_schema(con, table_name)
-    system_prompt = prompts.build_sql_system_prompt(live_schema, table_name, config)
+    system_prompt = prompts.build_sql_system_prompt(
+        live_schema, table_name, config, **(prompt_options or {})
+    )
     user_prompt = f"{history_text}\n\nCurrent question: {question}" if history_text else question
 
     result = client.generate(system_prompt, user_prompt, json_mode=True)
@@ -106,9 +109,12 @@ def _generate_sql_retry(
     failed_sql: str,
     error_message: str,
     live_schema: list[dict[str, Any]],
+    prompt_options: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     """The single Phase 1 retry, after a Phase 2 failure."""
-    system_prompt = prompts.build_sql_system_prompt(live_schema, table_name, config)
+    system_prompt = prompts.build_sql_system_prompt(
+        live_schema, table_name, config, **(prompt_options or {})
+    )
     retry_prompt = prompts.build_sql_retry_prompt(question, failed_sql, error_message)
     result = client.generate(system_prompt, retry_prompt, json_mode=True)
     sql, reasoning = _parse_sql_response(result.text)
@@ -134,21 +140,28 @@ def _unanswerable_result(question: str, sql: str, reasoning: str, provider: str,
     )
 
 
-def answer_question(
+def answer_question_sql_only(
     con: duckdb.DuckDBPyConnection,
     table_name: str,
     config: dict[str, Any],
     question: str,
     history: list[dict[str, Any]] | None = None,
+    prompt_options: dict[str, Any] | None = None,
 ) -> PipelineResult:
-    """Run the full Phase 1 -> Phase 2 -> Phase 3 pipeline for one natural-language
-    `question`. `con` should be the connection/cursor dedicated to LLM-generated SQL
-    (see llm/sandbox.py). `history` is the last-5-turn conversational memory (Task
-    B4), newest-last.
+    """Phase 1 -> Phase 2 only: generate SQL, validate and execute it, with the
+    single retry on failure. The returned PipelineResult carries an empty
+    `narrative`.
+
+    Split out from answer_question() so eval/run_ablation.py can measure SQL
+    accuracy without paying for a Phase 3 narrative it never scores -- that halves
+    the API calls an ablation sweep costs, which matters on a free tier.
+    `prompt_options` is forwarded to prompts.build_sql_system_prompt().
     """
     history_text = prompts.build_conversation_context(history or [])
 
-    sql, reasoning, sql_provider, live_schema = _generate_sql(con, table_name, config, question, history_text)
+    sql, reasoning, sql_provider, live_schema = _generate_sql(
+        con, table_name, config, question, history_text, prompt_options
+    )
     if not sql or not sql.strip():
         return _unanswerable_result(question, sql, reasoning, sql_provider, retried=False)
 
@@ -159,7 +172,7 @@ def answer_question(
         logger.warning("Phase 2 failed for %r (%s); retrying once", sql, first_error)
         retried = True
         sql, reasoning, sql_provider = _generate_sql_retry(
-            table_name, config, question, sql, str(first_error), live_schema
+            table_name, config, question, sql, str(first_error), live_schema, prompt_options
         )
         if not sql or not sql.strip():
             return _unanswerable_result(question, sql, reasoning, sql_provider, retried=True)
@@ -171,13 +184,37 @@ def answer_question(
                 f"one retry. Last error: {second_error}"
             ) from second_error
 
-    narrative, narrative_provider = _generate_narrative(question, sql, result_df)
-
     return PipelineResult(
         question=question, sql=sql, reasoning=reasoning, result=result_df,
-        narrative=narrative, sql_provider=sql_provider,
-        narrative_provider=narrative_provider, retried=retried,
+        narrative="", sql_provider=sql_provider, narrative_provider="", retried=retried,
     )
+
+
+def answer_question(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    config: dict[str, Any],
+    question: str,
+    history: list[dict[str, Any]] | None = None,
+    prompt_options: dict[str, Any] | None = None,
+) -> PipelineResult:
+    """Run the full Phase 1 -> Phase 2 -> Phase 3 pipeline for one natural-language
+    `question`. `con` should be the connection/cursor dedicated to LLM-generated SQL
+    (see llm/sandbox.py). `history` is the last-5-turn conversational memory (Task
+    B4), newest-last.
+    """
+    result = answer_question_sql_only(
+        con, table_name, config, question, history, prompt_options
+    )
+    # An unanswerable question already carries its explanation as the narrative;
+    # narrating an empty result would only invite the model to invent one.
+    if not result.sql or not result.sql.strip():
+        return result
+
+    narrative, narrative_provider = _generate_narrative(result.question, result.sql, result.result)
+    result.narrative = narrative
+    result.narrative_provider = narrative_provider
+    return result
 
 
 # ---------------------------------------------------------------------------

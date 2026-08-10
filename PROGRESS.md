@@ -109,3 +109,22 @@ end of every session — a fresh session has no memory of prior ones beyond what
   with regression tests asserting nothing unrounded reaches it.
   **All four tasks (A-D) are now done + tested.** Remaining: the 5-mark
   presentation/report component, and a manual browser pass over the UI.
+- 2026-08-11: Built the prompt ablation harness (`eval/run_ablation.py`) that spec
+  Section 10 calls the most report-worthy result available. Scoring was extracted
+  to `eval/scoring.py` so the ablation and the benchmark score identically (their
+  numbers would otherwise not be comparable), and `pipeline.answer_question_sql_only`
+  now exposes Phase 1+2 without Phase 3, halving the API calls a sweep costs.
+  **The sweep has NOT produced a valid result yet, and this is blocked on API
+  quota, not code.** The first run returned a complete-looking table (schema_only
+  20%, full_prompt 13%) that was entirely an artifact: both free tiers were
+  exhausted (Gemini 20 requests/day, Groq 100k tokens/day), so nearly every call
+  429'd, and configurations effectively ranked by run order -- whichever ran first
+  spent the remaining quota. Those results were deleted rather than kept.
+  A full sweep needs ~130k input tokens (4 configs x 15 questions x ~2.1k tokens),
+  which structurally exceeds Groq's 100k/day free allowance, so it cannot complete
+  in one day on the current plan. The harness now aborts with `QuotaExhausted` and
+  writes no file when provider failures exceed 20% of a configuration, with tests
+  covering both the abort and the tolerate-one-blip case.
+  To actually get the number: run on a day with fresh quota using
+  `--repeats 1`, spread configurations across days, use a trimmed question set, or
+  upgrade a provider tier.

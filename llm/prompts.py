@@ -26,12 +26,20 @@ def build_sql_system_prompt(
     schema: list[dict[str, Any]],
     table_name: str,
     config: dict[str, Any],
+    include_synonyms: bool = True,
+    include_few_shot: bool = True,
 ) -> str:
     """Assemble the Phase 1 (NL -> SQL) system prompt: table name, introspected
     schema JSON, synonym dictionary, and few-shot examples.
+
+    The two `include_*` flags default to on, so normal callers get the full
+    prompt. They exist so eval/run_ablation.py can build the same prompt with
+    individual components removed and measure what each one actually contributes
+    to accuracy (PROJECT_SPEC.md Section 10) -- without that, "the synonym
+    dictionary helps" would be an assumption rather than a measurement.
     """
-    synonyms = config.get("synonyms", {})
-    few_shot = config.get("few_shot_examples", [])
+    synonyms = config.get("synonyms", {}) if include_synonyms else {}
+    few_shot = config.get("few_shot_examples", []) if include_few_shot else []
 
     parts = [
         "You are a SQL generation assistant for a read-only analytics database. "
