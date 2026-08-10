@@ -4,3 +4,8 @@ pandas==3.0.5
 pyyaml==6.0.3
 python-dotenv==1.2.2
 pytest==9.1.1
+
+# Task B
+sqlglot==30.16.0
+google-genai==2.17.0
+groq==1.6.0
