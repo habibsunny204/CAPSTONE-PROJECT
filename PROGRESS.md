@@ -17,8 +17,8 @@ end of every session — a fresh session has no memory of prior ones beyond what
 
 | ID | Subtask | Status | Notes |
 |----|---------|--------|-------|
-| B1 | Prompt design (schema + synonyms + few-shot) | not started | |
-| B2 | Pipeline (Phase 1/2/3 + sandbox + single retry) | not started | |
+| B1 | Prompt design (schema + synonyms + few-shot) | in progress | `llm/prompts.py`, 40+ entry synonym dict + 3 few-shot examples in `configs/dataset_config.yaml`, and `eval/benchmark_questions.json` (15 questions, all 5 spec categories, ground truth computed against the real 51,290-row dataset) are done. Blocked on live keys: the required "test against >=10 phrasings, log results" run via `eval/run_benchmark.py` hasn't happened yet. |
+| B2 | Pipeline (Phase 1/2/3 + sandbox + single retry) | done + tested | `llm/sandbox.py` (allowlist-based sqlglot validation, 38 exploit tests), `llm/client.py` (Gemini->Groq failover, 8 mocked tests), `llm/pipeline.py` (Phase 1/2/3 + single retry + graceful "unanswerable" handling, 5 integration tests). All logic-level tests pass without needing real API keys. |
 | B3 | Insight generation (3 preset prompts) | not started | |
 | B4 | Conversational context (last-5-turn memory) | not started | |
 | B5 | Reliability (validation, loading indicator, Gemini->Groq failover) | not started | |

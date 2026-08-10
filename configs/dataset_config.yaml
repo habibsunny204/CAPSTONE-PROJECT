@@ -111,8 +111,70 @@ benchmark:
       filters:
         - {column: "discount", op: ">", value: 0.2}
 
-# Populated in Task B1 (synonym dictionary) and Task C (curated-chart column
-# bindings). Placeholders here so the file's shape is stable from A1 onward.
-synonyms: {}
+# Task B1: informal-phrase -> actual column name, injected into every SQL-generation
+# prompt alongside the introspected schema JSON (llm/prompts.py reads this; the
+# phrases themselves are only ever rendered as prompt text, never executed, so
+# casing here just needs to read naturally).
+synonyms:
+  revenue: sales
+  income: profit
+  earnings: profit
+  margin: profit
+  loss: profit
+  "% off": discount
+  "percent off": discount
+  "discount rate": discount
+  "discount percentage": discount
+  priority: order_priority
+  urgency: order_priority
+  "shipping method": ship_mode
+  "delivery method": ship_mode
+  "shipping type": ship_mode
+  "freight cost": shipping_cost
+  "shipping fee": shipping_cost
+  "delivery cost": shipping_cost
+  "product category": category
+  "product type": category
+  subcategory: sub_category
+  "product line": sub_category
+  "customer type": segment
+  "customer segment": segment
+  "purchase date": order_date
+  "sale date": order_date
+  "delivery date": ship_date
+  units: quantity
+  "units sold": quantity
+  "number ordered": quantity
+  nation: country
+  "world region": market
+  continent: market
+  "sales region": region
+  province: state
+  town: city
+  "unique customers": customer_id_hash
+  "repeat customers": customer_id_hash
+  "order number": order_id
+  sku: product_id
+  "item name": product_name
+  "week number": week_num
+  "fiscal year": year
+
+# Task B1: 2-3 few-shot question -> SQL examples, in the exact structured-output
+# shape Phase 1 (llm/pipeline.py) asks the LLM to produce. Dataset-specific by
+# nature (they reference real column names), so centralized here rather than
+# hardcoded in llm/prompts.py, consistent with this file's role as the one place
+# dataset-specific detail is allowed to live.
+few_shot_examples:
+  - question: "What is the total revenue by region?"
+    reasoning: "'Revenue' is a synonym for sales. Group by region and sum sales."
+    sql: "SELECT region, SUM(sales) AS total_sales FROM superstore GROUP BY region ORDER BY total_sales DESC"
+  - question: "What is the average profit for orders with more than 20% discount?"
+    reasoning: "'More than 20% discount' filters discount > 0.2 (discount is stored as a fraction, not a percentage)."
+    sql: "SELECT AVG(profit) AS avg_profit FROM superstore WHERE discount > 0.2"
+  - question: "Show me the top 5 sub-categories by profit in the West region."
+    reasoning: "Filter to region = 'West', group by sub_category, sum profit, sort descending, limit 5."
+    sql: "SELECT sub_category, SUM(profit) AS total_profit FROM superstore WHERE region = 'West' GROUP BY sub_category ORDER BY total_profit DESC LIMIT 5"
+
+# Populated in Task C. Placeholder here so the file's shape is stable from A1 onward.
 charts:
   curated_bindings: {}

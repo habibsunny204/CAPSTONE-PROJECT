@@ -1,1 +1,122 @@
-[]
+[
+  {
+    "id": "simple_agg_1",
+    "category": "simple_aggregation",
+    "question": "What is the total sales across all orders?",
+    "reference_sql": "SELECT SUM(sales) FROM superstore",
+    "ground_truth": 12642905,
+    "notes": "Sum over all 51,290 rows of the cleaned dataset."
+  },
+  {
+    "id": "simple_agg_2",
+    "category": "simple_aggregation",
+    "question": "How many unique orders were placed?",
+    "reference_sql": "SELECT COUNT(DISTINCT order_id) FROM superstore",
+    "ground_truth": 25035,
+    "notes": "Distinct order_id count, not row count (a single order can span multiple line-item rows)."
+  },
+  {
+    "id": "simple_agg_3",
+    "category": "simple_aggregation",
+    "question": "What is the average discount given across all orders?",
+    "reference_sql": "SELECT AVG(discount) FROM superstore",
+    "ground_truth": 0.1429,
+    "notes": "discount is stored as a fraction (0-1), not a percentage. Rounded to 4 decimal places."
+  },
+  {
+    "id": "filtered_agg_1",
+    "category": "filtered_aggregation",
+    "question": "What is the average profit for orders with more than 20% discount?",
+    "reference_sql": "SELECT AVG(profit) FROM superstore WHERE discount > 0.2",
+    "ground_truth": -71.92,
+    "notes": "Deliberately a negative number -- heavily discounted orders lose money on average in this dataset, a good check that the system doesn't silently clip/misreport negative results."
+  },
+  {
+    "id": "filtered_agg_2",
+    "category": "filtered_aggregation",
+    "question": "What is the total sales in the West region for the Consumer segment?",
+    "reference_sql": "SELECT SUM(sales) FROM superstore WHERE region = 'West' AND segment = 'Consumer'",
+    "ground_truth": 362908,
+    "notes": "Two-condition filter, but both conditions on the same logical dimension (not yet the 'multi-condition' category below, which requires >=2 independently-sourced filters)."
+  },
+  {
+    "id": "synonym_1",
+    "category": "synonym_resolution",
+    "question": "What is the total revenue by product category?",
+    "reference_sql": "SELECT category, SUM(sales) FROM superstore GROUP BY category ORDER BY 2 DESC",
+    "ground_truth": {"Technology": 4744691, "Furniture": 4110884, "Office Supplies": 3787330},
+    "notes": "'Revenue' -> sales, 'product category' -> category. Tests the synonym dictionary, not just column-name matching."
+  },
+  {
+    "id": "synonym_2",
+    "category": "synonym_resolution",
+    "question": "Which shipping method is used most often?",
+    "reference_sql": "SELECT ship_mode, COUNT(*) AS c FROM superstore GROUP BY ship_mode ORDER BY c DESC LIMIT 1",
+    "ground_truth": {"ship_mode": "Standard Class", "count": 30775},
+    "notes": "'Shipping method' -> ship_mode."
+  },
+  {
+    "id": "synonym_3",
+    "category": "synonym_resolution",
+    "question": "What's the average freight cost per order?",
+    "reference_sql": "SELECT AVG(shipping_cost) FROM superstore",
+    "ground_truth": 26.38,
+    "notes": "'Freight cost' -> shipping_cost."
+  },
+  {
+    "id": "multi_filter_1",
+    "category": "multi_condition_filter",
+    "question": "What is the total profit for Technology products shipped via First Class in 2013?",
+    "reference_sql": "SELECT SUM(profit) FROM superstore WHERE category = 'Technology' AND ship_mode = 'First Class' AND year = 2013",
+    "ground_truth": 22130.13,
+    "notes": "Three independent filter conditions combined with AND."
+  },
+  {
+    "id": "multi_filter_2",
+    "category": "multi_condition_filter",
+    "question": "How many orders had a discount greater than 10% and resulted in a loss?",
+    "reference_sql": "SELECT COUNT(*) FROM superstore WHERE discount > 0.1 AND profit < 0",
+    "ground_truth": 11643,
+    "notes": "'Resulted in a loss' -> profit < 0. Tests that the system infers a numeric condition from a qualitative phrase."
+  },
+  {
+    "id": "multi_filter_3",
+    "category": "multi_condition_filter",
+    "question": "Compare total sales between the West and East regions.",
+    "reference_sql": "SELECT region, SUM(sales) FROM superstore WHERE region IN ('West', 'East') GROUP BY region",
+    "ground_truth": {"West": 725514, "East": 678834},
+    "notes": "West outsells East by 46,680. Tests a comparison framing rather than a single-value answer."
+  },
+  {
+    "id": "synonym_multi_1",
+    "category": "synonym_resolution",
+    "question": "What's the biggest sub-category by earnings?",
+    "reference_sql": "SELECT sub_category, SUM(profit) AS p FROM superstore GROUP BY sub_category ORDER BY p DESC LIMIT 1",
+    "ground_truth": {"sub_category": "Copiers", "profit": 258567.55},
+    "notes": "'Earnings' -> profit, combined with a top-1 ranking phrasing ('biggest ... by')."
+  },
+  {
+    "id": "out_of_scope_1",
+    "category": "out_of_scope",
+    "question": "What will next quarter's sales be?",
+    "reference_sql": null,
+    "ground_truth": "unanswerable",
+    "notes": "Requires forecasting, not present in this dataset or system. Expect the system to decline/explain rather than invent a projected number."
+  },
+  {
+    "id": "out_of_scope_2",
+    "category": "out_of_scope",
+    "question": "What is the CEO's name?",
+    "reference_sql": null,
+    "ground_truth": "unanswerable",
+    "notes": "No such entity/column exists anywhere in the schema. Expect a clear 'not answerable from this data' response, not a hallucinated name."
+  },
+  {
+    "id": "out_of_scope_3",
+    "category": "out_of_scope",
+    "question": "Show me sales data for 2025.",
+    "reference_sql": "SELECT * FROM superstore WHERE year = 2025",
+    "ground_truth": "empty result (0 rows)",
+    "notes": "Unlike the two above, a valid SQL query CAN be generated here -- the dataset's actual year range is 2011-2014 (verified against the cleaned data), so the correct behavior is a graceful empty result, not a refusal and not fabricated rows."
+  }
+]

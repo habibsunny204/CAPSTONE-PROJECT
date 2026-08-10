@@ -1,6 +1,130 @@
 """System prompt templates for SQL generation and narrative generation (Task B1).
 
-Not yet implemented. Design: composes the schema JSON from backend/schema.py, the
-synonym dictionary loaded from configs/dataset_config.yaml, and 2-3 few-shot
-question->SQL examples.
+Schema is always introspected live (backend/schema.py) and every dataset-specific
+detail (synonym dictionary, few-shot examples) is read from
+configs/dataset_config.yaml rather than hardcoded here -- this module builds prompt
+*text*, it never contains a Superstore column name as a Python string literal.
 """
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import pandas as pd
+
+SQL_RESPONSE_INSTRUCTIONS = (
+    'Respond with a single JSON object of exactly this shape: '
+    '{"sql": "<a single read-only SELECT statement, or an empty string if unanswerable>", '
+    '"reasoning": "<one or two sentences explaining your approach>"}. '
+    "Do not include markdown code fences, explanations outside the JSON, or any text "
+    "before/after the JSON object."
+)
+
+
+def build_sql_system_prompt(
+    schema: list[dict[str, Any]],
+    table_name: str,
+    config: dict[str, Any],
+) -> str:
+    """Assemble the Phase 1 (NL -> SQL) system prompt: table name, introspected
+    schema JSON, synonym dictionary, and few-shot examples.
+    """
+    synonyms = config.get("synonyms", {})
+    few_shot = config.get("few_shot_examples", [])
+
+    parts = [
+        "You are a SQL generation assistant for a read-only analytics database. "
+        f'There is exactly one table, "{table_name}", described by this schema '
+        "(one JSON object per column: name, dtype, n_unique, n_null, up to 5 sample_values):",
+        json.dumps(schema, indent=2, default=str),
+        "\nRules:",
+        f'- Only ever query the "{table_name}" table. Never reference any other '
+        "table, file, or function.",
+        "- Generate exactly one read-only SELECT statement (CTEs and UNION/"
+        "INTERSECT/EXCEPT of SELECTs are fine). Never DDL, DML, ATTACH, PRAGMA, "
+        "COPY, or multiple statements.",
+        '- If the question cannot be answered from this schema (it needs data or '
+        'a capability -- like forecasting -- this table does not have), set "sql" '
+        'to an empty string and explain why in "reasoning" instead of guessing or '
+        "inventing columns.",
+    ]
+
+    if synonyms:
+        parts.append(
+            "\nUsers often use informal terms that don't match column names "
+            "exactly. Known synonyms (informal term -> actual column):"
+        )
+        parts.append(json.dumps(synonyms, indent=2))
+
+    if few_shot:
+        parts.append("\nExamples of well-formed responses:")
+        for example in few_shot:
+            parts.append(json.dumps({
+                "question": example["question"],
+                "response": {"sql": example["sql"], "reasoning": example["reasoning"]},
+            }, indent=2))
+
+    parts.append(f"\n{SQL_RESPONSE_INSTRUCTIONS}")
+    return "\n".join(parts)
+
+
+def build_sql_retry_prompt(question: str, failed_sql: str, error_message: str) -> str:
+    """Phase 1 single-retry prompt, sent back to the LLM once after Phase 2
+    (sandbox validation/execution) rejects the first attempt (PROJECT_SPEC.md
+    Task B2: retry once, then surface a clean failure message -- no unbounded retry).
+    """
+    return (
+        f'Your previous SQL for the question "{question}" failed validation or '
+        f"execution.\nSQL you generated:\n{failed_sql}\n\nError:\n{error_message}\n\n"
+        f"Fix the SQL and respond again. {SQL_RESPONSE_INSTRUCTIONS}"
+    )
+
+
+def build_narrative_system_prompt() -> str:
+    """Phase 3 (result -> narrative) system prompt."""
+    return (
+        "You are a data analyst writing a short answer for a business dashboard. "
+        "You will be given the user's original question, the SQL query that was "
+        "run, and the resulting data. Write a concise Markdown-formatted narrative "
+        "(2-5 sentences, plus a short bullet list if there are multiple notable "
+        "figures) that directly answers the question using only numbers present in "
+        "the result. Never invent or estimate a number that isn't in the result. If "
+        "the result is empty, say so plainly instead of fabricating an answer."
+    )
+
+
+def build_narrative_user_prompt(question: str, sql: str, result_df: pd.DataFrame) -> str:
+    """Phase 3 user-turn content: the question, the SQL that answered it, and the
+    result rendered as compact JSON records, capped so a very large result doesn't
+    blow the prompt budget -- the narrative only needs representative rows.
+    """
+    max_rows = 50
+    records = result_df.head(max_rows).to_dict(orient="records")
+    payload = {
+        "question": question,
+        "sql": sql,
+        "row_count": len(result_df),
+        "result_rows": records,
+        "truncated": len(result_df) > max_rows,
+    }
+    return json.dumps(payload, indent=2, default=str)
+
+
+def build_conversation_context(history: list[dict[str, Any]]) -> str:
+    """Render up to the last 5 (question, sql, answer) turns as prompt text for
+    follow-up questions (Task B4). `history` is newest-last; memory.py owns
+    storage/state, this function only owns formatting -- returns "" for no history
+    so callers can unconditionally append it without a branch.
+    """
+    if not history:
+        return ""
+    lines = [
+        "Recent conversation history (most recent last), for resolving follow-up "
+        "references like 'that' or 'those':"
+    ]
+    for turn in history[-5:]:
+        lines.append(f"- Q: {turn['question']}")
+        lines.append(f"  SQL: {turn['sql']}")
+        lines.append(f"  A: {turn['answer']}")
+    return "\n".join(lines)
