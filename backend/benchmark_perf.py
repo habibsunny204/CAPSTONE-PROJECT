@@ -47,7 +47,9 @@ def _time_scenario(
 
     timings = []
     for _ in range(n_iterations):
-        _, elapsed_ms = query_engine.groupby_agg(con, table_name, dims, metrics, aggs, filters=filters)
+        _, elapsed_ms = query_engine.groupby_agg(
+            con, table_name, dims, metrics, aggs, filters=filters
+        )
         timings.append(elapsed_ms)
     return timings
 
@@ -78,18 +80,20 @@ def run_benchmark(
     for scenario in scenarios:
         timings = _time_scenario(con, table_name, scenario)
         stats = _stats(timings)
-        results.append({
-            "name": scenario["name"],
-            "params": {
-                "dims": scenario["dims"],
-                "metrics": scenario["metrics"],
-                "aggs": scenario["aggs"],
-                "filters": scenario.get("filters"),
-            },
-            "n_iterations": N_ITERATIONS,
-            "stats_ms": stats,
-            "passed": stats["median_ms"] < PASS_THRESHOLD_MS,
-        })
+        results.append(
+            {
+                "name": scenario["name"],
+                "params": {
+                    "dims": scenario["dims"],
+                    "metrics": scenario["metrics"],
+                    "aggs": scenario["aggs"],
+                    "filters": scenario.get("filters"),
+                },
+                "n_iterations": N_ITERATIONS,
+                "stats_ms": stats,
+                "passed": stats["median_ms"] < PASS_THRESHOLD_MS,
+            }
+        )
     return results
 
 
@@ -124,15 +128,19 @@ def main() -> int:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(evidence, f, indent=2)
 
-    print(f"Benchmarked {n_rows} rows, {N_ITERATIONS} iterations per scenario "
-          f"(threshold: {PASS_THRESHOLD_MS}ms median)\n")
+    print(
+        f"Benchmarked {n_rows} rows, {N_ITERATIONS} iterations per scenario "
+        f"(threshold: {PASS_THRESHOLD_MS}ms median)\n"
+    )
     all_passed = True
     for r in results:
         all_passed = all_passed and r["passed"]
         status = "PASS" if r["passed"] else "FAIL"
         s = r["stats_ms"]
-        print(f"[{status}] {r['name']}: median={s['median_ms']:.2f}ms "
-              f"p95={s['p95_ms']:.2f}ms min={s['min_ms']:.2f}ms max={s['max_ms']:.2f}ms")
+        print(
+            f"[{status}] {r['name']}: median={s['median_ms']:.2f}ms "
+            f"p95={s['p95_ms']:.2f}ms min={s['min_ms']:.2f}ms max={s['max_ms']:.2f}ms"
+        )
     print(f"\nEvidence written to {out_path.relative_to(REPO_ROOT)}")
 
     return 0 if all_passed else 1
