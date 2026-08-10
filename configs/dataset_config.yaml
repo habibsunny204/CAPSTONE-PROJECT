@@ -1,0 +1,117 @@
+# Dataset configuration for the Global Superstore capstone project.
+#
+# This is the single place dataset-specific detail is allowed to live (PROJECT_SPEC.md
+# Section 2's generic/specific boundary): the raw-to-normalized column rename map, PII
+# handling rules, the synonym dictionary, and curated-chart column bindings. Every
+# other module reads from this file rather than hardcoding Superstore column names as
+# string literals.
+
+dataset:
+  raw_csv_path: "data/raw/global_superstore.csv"
+  table_name: "superstore"
+  encoding: "utf-8-sig"
+  # Surrogate key, always unique by construction — excluded from A3's duplicate-row
+  # detection (otherwise that metric would trivially always read 0).
+  id_column: "row_id"
+
+# PII handling (PROJECT_SPEC.md Section 2 hard gate): resolved before any schema JSON
+# derived from this data can reach an LLM prompt. Customer.Name has zero analytical
+# value and is dropped outright. Customer.ID is pseudonymous but re-identifiable
+# against public copies of this dataset, so it is hashed (not dropped) to preserve
+# unique/repeat-customer analytics while breaking the identity linkage.
+pii:
+  drop_columns:
+    - "Customer.Name"
+  hash_columns:
+    "Customer.ID": "customer_id_hash"
+  hash_salt_env_var: "PII_HASH_SALT"
+  hash_length: 16
+
+# Raw dot-separated header -> normalized snake_case name. Applied after the PII step
+# above (Customer.ID/Customer.Name are handled by the pii section, not here).
+columns:
+  rename_map:
+    "Category": "category"
+    "City": "city"
+    "Country": "country"
+    "Discount": "discount"
+    "Market": "market"
+    "记录数": "record_count"
+    "Order.Date": "order_date"
+    "Order.ID": "order_id"
+    "Order.Priority": "order_priority"
+    "Product.ID": "product_id"
+    "Product.Name": "product_name"
+    "Profit": "profit"
+    "Quantity": "quantity"
+    "Region": "region"
+    "Row.ID": "row_id"
+    "Sales": "sales"
+    "Segment": "segment"
+    "Ship.Date": "ship_date"
+    "Ship.Mode": "ship_mode"
+    "Shipping.Cost": "shipping_cost"
+    "State": "state"
+    "Sub.Category": "sub_category"
+    "Year": "year"
+    "Market2": "market_group"
+    "weeknum": "week_num"
+
+# Task A3 (quality.py) reads this section to decide what to clean, rather than
+# hardcoding column names in the cleaning code.
+quality:
+  date_columns:
+    - "order_date"
+    - "ship_date"
+  # record_count (raw 记录数) is a constant-value Tableau row-counter artifact with
+  # zero information content — dropped as a documented structural cleaning step.
+  drop_after_profiling:
+    - "record_count"
+  # Low-cardinality string columns eligible for casing standardization (trim +
+  # canonical casing). Applied generically by quality.py, not hardcoded per-column.
+  categorical_casing_columns:
+    - "category"
+    - "segment"
+    - "ship_mode"
+    - "order_priority"
+    - "region"
+    - "market"
+    - "market_group"
+    - "sub_category"
+    - "country"
+    - "state"
+    - "city"
+  # market_group and week_num are kept (not dropped) — deliberate decision, documented
+  # here rather than silently made, per CLAUDE.md's instruction. Both are derived from
+  # other columns, not independent data.
+  derived_columns:
+    market_group: "Coarser grouping of market: US and Canada collapsed into North America. Derived from market, kept as a plausible synonym target for Task B (e.g. 'North America' as a region phrase)."
+    week_num: "ISO week number of order_date. Derived from order_date, kept as a ready-made weekly grouping dimension."
+
+# A4's benchmark_perf.py reads these scenarios rather than hardcoding column names.
+benchmark:
+  scenarios:
+    - name: "sales_by_region_consumer"
+      dims: ["region"]
+      metrics: ["sales"]
+      aggs: ["sum"]
+      filters:
+        - {column: "segment", op: "=", value: "Consumer"}
+    - name: "sales_profit_by_region_category_2012plus"
+      dims: ["region", "category"]
+      metrics: ["sales", "profit"]
+      aggs: ["sum", "avg"]
+      filters:
+        - {column: "order_date", op: ">=", value: "2012-01-01"}
+    - name: "avg_profit_high_discount_orders"
+      dims: ["category"]
+      metrics: ["profit"]
+      aggs: ["avg"]
+      filters:
+        - {column: "discount", op: ">", value: 0.2}
+
+# Populated in Task B1 (synonym dictionary) and Task C (curated-chart column
+# bindings). Placeholders here so the file's shape is stable from A1 onward.
+synonyms: {}
+charts:
+  curated_bindings: {}
