@@ -1,0 +1,267 @@
+{
+  "generated_at": "2026-08-10T17:31:13.171244+00:00",
+  "n_questions": 15,
+  "n_passed": 15,
+  "accuracy": 1.0,
+  "results": [
+    {
+      "id": "simple_agg_1",
+      "category": "simple_aggregation",
+      "question": "What is the total sales across all orders?",
+      "sql": "SELECT SUM(sales) AS total_sales FROM superstore",
+      "reasoning": "The user wants the sum of all sales, so I will select the sum of the 'sales' column from the 'superstore' table.",
+      "result_preview": [
+        {
+          "total_sales": 12642905.0
+        }
+      ],
+      "narrative": "The total sales across all orders is **$12,642,905.00**.",
+      "sql_provider": "gemini",
+      "retried": false,
+      "passed": true,
+      "score_method": "scalar_numeric_match"
+    },
+    {
+      "id": "simple_agg_2",
+      "category": "simple_aggregation",
+      "question": "How many unique orders were placed?",
+      "sql": "SELECT COUNT(DISTINCT order_id) FROM superstore",
+      "reasoning": "To find the number of unique orders, I need to count the distinct values in the 'order_id' column.",
+      "result_preview": [
+        {
+          "count(DISTINCT order_id)": 25035
+        }
+      ],
+      "narrative": "There were 25,035 unique orders placed.",
+      "sql_provider": "gemini",
+      "retried": false,
+      "passed": true,
+      "score_method": "scalar_numeric_match"
+    },
+    {
+      "id": "simple_agg_3",
+      "category": "simple_aggregation",
+      "question": "What is the average discount given across all orders?",
+      "sql": "SELECT AVG(discount) AS average_discount FROM superstore",
+      "reasoning": "Calculate the average of the 'discount' column across all rows.",
+      "result_preview": [
+        {
+          "average_discount": 0.14290754533047093
+        }
+      ],
+      "narrative": "Across all orders, the average discount provided is 0.1429. This figure represents the mean discount percentage applied to items in each order.",
+      "sql_provider": "gemini",
+      "retried": false,
+      "passed": true,
+      "score_method": "scalar_numeric_match"
+    },
+    {
+      "id": "filtered_agg_1",
+      "category": "filtered_aggregation",
+      "question": "What is the average profit for orders with more than 20% discount?",
+      "sql": "SELECT AVG(profit) AS avg_profit FROM superstore WHERE discount > 0.2",
+      "reasoning": "'More than 20% discount' filters discount > 0.2 (discount is stored as a fraction, not a percentage).",
+      "result_preview": [
+        {
+          "avg_profit": -71.91755708862976
+        }
+      ],
+      "narrative": "The average profit for orders with more than 20% discount is **-$71.92**. This value is based on the query results. Notable figures from the result include:\n* Average profit: -$71.92\nThe result shows a loss, indicating that orders with more than 20% discount have a negative average profit.",
+      "sql_provider": "groq",
+      "retried": false,
+      "passed": true,
+      "score_method": "scalar_numeric_match"
+    },
+    {
+      "id": "filtered_agg_2",
+      "category": "filtered_aggregation",
+      "question": "What is the total sales in the West region for the Consumer segment?",
+      "sql": "SELECT SUM(sales) AS total_sales FROM superstore WHERE region = 'West' AND segment = 'Consumer'",
+      "reasoning": "Filter by region 'West' and segment 'Consumer', then sum the 'sales' column.",
+      "result_preview": [
+        {
+          "total_sales": 362908.0
+        }
+      ],
+      "narrative": "The total sales in the West region for the Consumer segment is $362,908.0.",
+      "sql_provider": "gemini",
+      "retried": false,
+      "passed": true,
+      "score_method": "scalar_numeric_match"
+    },
+    {
+      "id": "synonym_1",
+      "category": "synonym_resolution",
+      "question": "What is the total revenue by product category?",
+      "sql": "SELECT category, SUM(sales) AS total_revenue FROM superstore GROUP BY category ORDER BY total_revenue DESC",
+      "reasoning": "'Revenue' is a synonym for sales, and 'product category' maps to category. Group by category and sum sales.",
+      "result_preview": [
+        {
+          "category": "Technology",
+          "total_revenue": 4744691.0
+        },
+        {
+          "category": "Furniture",
+          "total_revenue": 4110884.0
+        },
+        {
+          "category": "Office Supplies",
+          "total_revenue": 3787330.0
+        }
+      ],
+      "narrative": "### Total Revenue by Product Category\nThe total revenue is broken down into three product categories. The highest revenue is from the Technology category, followed by Furniture and Office Supplies. Notable figures include:\n* Technology: $4,744,691\n* Furniture: $4,110,884\n* Office Supplies: $3,787,330\nThese categories represent the total revenue from the superstore.",
+      "sql_provider": "gemini",
+      "retried": false,
+      "passed": true,
+      "score_method": "dict_numeric_match"
+    },
+    {
+      "id": "synonym_2",
+      "category": "synonym_resolution",
+      "question": "Which shipping method is used most often?",
+      "sql": "SELECT ship_mode, COUNT(*) AS count FROM superstore GROUP BY ship_mode ORDER BY count DESC LIMIT 1",
+      "reasoning": "Group by ship_mode and count the occurrences of each, then sort descending and limit to 1 to find the most frequently used shipping method.",
+      "result_preview": [
+        {
+          "ship_mode": "Standard Class",
+          "count": 30775
+        }
+      ],
+      "narrative": "The most frequently used shipping method is Standard Class. This method is used 30,775 times. Notable figures include:\n* 30,775: the number of times Standard Class is used. Overall, Standard Class is the clear leader in shipping method usage.",
+      "sql_provider": "groq",
+      "retried": false,
+      "passed": true,
+      "score_method": "dict_numeric_match"
+    },
+    {
+      "id": "synonym_3",
+      "category": "synonym_resolution",
+      "question": "What's the average freight cost per order?",
+      "sql": "SELECT AVG(shipping_cost) AS avg_freight_cost FROM superstore",
+      "reasoning": "The average freight cost per order can be calculated by taking the average of the shipping_cost column in the superstore table.",
+      "result_preview": [
+        {
+          "avg_freight_cost": 26.37581796451525
+        }
+      ],
+      "narrative": "The average freight cost per order is $26.38. This figure is based on the analysis of data from the superstore. \n* Notable figure: \n  * Average freight cost per order: $26.38 \nThe result provides a single, precise average freight cost.",
+      "sql_provider": "groq",
+      "retried": false,
+      "passed": true,
+      "score_method": "scalar_numeric_match"
+    },
+    {
+      "id": "multi_filter_1",
+      "category": "multi_condition_filter",
+      "question": "What is the total profit for Technology products shipped via First Class in 2013?",
+      "sql": "SELECT SUM(profit) AS total_profit FROM superstore WHERE category = 'Technology' AND ship_mode = 'First Class' AND YEAR(order_date) = 2013",
+      "reasoning": "Filter to category = 'Technology', ship_mode = 'First Class', and order_date in 2013, then sum the profit.",
+      "result_preview": [
+        {
+          "total_profit": 22130.133640000007
+        }
+      ],
+      "narrative": "The total profit for Technology products shipped via First Class in 2013 is $22,130.13. This figure is based on the sum of profits from all relevant orders. Notable details of this result include:\n* Total profit: $22,130.13\nThe data indicates a significant profit from Technology products shipped via First Class in the specified year.",
+      "sql_provider": "groq",
+      "retried": false,
+      "passed": true,
+      "score_method": "scalar_numeric_match"
+    },
+    {
+      "id": "multi_filter_2",
+      "category": "multi_condition_filter",
+      "question": "How many orders had a discount greater than 10% and resulted in a loss?",
+      "sql": "SELECT COUNT(order_id) AS num_orders FROM superstore WHERE discount > 0.1 AND profit < 0",
+      "reasoning": "Filter to orders with a discount greater than 10% (0.1 as a fraction) and a profit less than 0 (i.e., a loss), then count the number of such orders.",
+      "result_preview": [
+        {
+          "num_orders": 11643
+        }
+      ],
+      "narrative": "There were orders that had a discount greater than 10% and resulted in a loss. The total number of such orders is 11,643. Key figures related to these orders include:\n* 11,643 orders with a discount greater than 10% and a loss. These numbers indicate a significant portion of orders that were unprofitable despite or due to the discounts applied.",
+      "sql_provider": "groq",
+      "retried": false,
+      "passed": true,
+      "score_method": "scalar_numeric_match"
+    },
+    {
+      "id": "multi_filter_3",
+      "category": "multi_condition_filter",
+      "question": "Compare total sales between the West and East regions.",
+      "sql": "SELECT region, SUM(sales) AS total_sales FROM superstore WHERE region IN ('West', 'East') GROUP BY region ORDER BY total_sales DESC",
+      "reasoning": "Filter to the West and East regions, group by region, sum sales, and sort by total sales in descending order to compare.",
+      "result_preview": [
+        {
+          "region": "West",
+          "total_sales": 725514.0
+        },
+        {
+          "region": "East",
+          "total_sales": 678834.0
+        }
+      ],
+      "narrative": "### Comparison of Total Sales between West and East Regions\nThe total sales in the West region amount to $725,514. In comparison, the East region has total sales of $678,834. Notable total sales figures include:\n* West: $725,514\n* East: $678,834\nThe West region has the highest total sales.",
+      "sql_provider": "groq",
+      "retried": false,
+      "passed": true,
+      "score_method": "dict_numeric_match"
+    },
+    {
+      "id": "synonym_multi_1",
+      "category": "synonym_resolution",
+      "question": "What's the biggest sub-category by earnings?",
+      "sql": "SELECT sub_category, SUM(profit) AS total_earnings FROM superstore GROUP BY sub_category ORDER BY total_earnings DESC LIMIT 1",
+      "reasoning": "Earnings is a synonym for profit, so we group by sub_category, sum profit, sort descending, and limit 1 to find the biggest sub-category by earnings.",
+      "result_preview": [
+        {
+          "sub_category": "Copiers",
+          "total_earnings": 258567.54817999995
+        }
+      ],
+      "narrative": "The biggest sub-category by earnings is **Copiers** with a total of $258,567.55 in earnings. This sub-category has the highest earnings among all sub-categories. Key figures include:\n* Total earnings: $258,567.55\nThe result is based on the total earnings of each sub-category.",
+      "sql_provider": "groq",
+      "retried": false,
+      "passed": true,
+      "score_method": "dict_numeric_match"
+    },
+    {
+      "id": "out_of_scope_1",
+      "category": "out_of_scope",
+      "question": "What will next quarter's sales be?",
+      "sql": "",
+      "reasoning": "This question cannot be answered from the provided schema as it requires forecasting, which is not supported by the given data or the SQL SELECT statement.",
+      "result_preview": [],
+      "narrative": "This question cannot be answered from the provided schema as it requires forecasting, which is not supported by the given data or the SQL SELECT statement.",
+      "sql_provider": "groq",
+      "retried": false,
+      "passed": true,
+      "score_method": "out_of_scope_graceful_check"
+    },
+    {
+      "id": "out_of_scope_2",
+      "category": "out_of_scope",
+      "question": "What is the CEO's name?",
+      "sql": "",
+      "reasoning": "The CEO's name is not available in the provided table schema, so the question cannot be answered from the given data.",
+      "result_preview": [],
+      "narrative": "The CEO's name is not available in the provided table schema, so the question cannot be answered from the given data.",
+      "sql_provider": "groq",
+      "retried": false,
+      "passed": true,
+      "score_method": "out_of_scope_graceful_check"
+    },
+    {
+      "id": "out_of_scope_3",
+      "category": "out_of_scope",
+      "question": "Show me sales data for 2025.",
+      "sql": "",
+      "reasoning": "The 'year' column in the superstore table only contains years up to 2014, so it is not possible to retrieve sales data for the year 2025.",
+      "result_preview": [],
+      "narrative": "The 'year' column in the superstore table only contains years up to 2014, so it is not possible to retrieve sales data for the year 2025.",
+      "sql_provider": "groq",
+      "retried": false,
+      "passed": true,
+      "score_method": "out_of_scope_graceful_check"
+    }
+  ]
+}

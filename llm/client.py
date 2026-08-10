@@ -15,9 +15,16 @@ import time
 from dataclasses import dataclass
 
 import groq
+import httpx
+from dotenv import load_dotenv
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
+
+# Loaded at import time so GEMINI_API_KEY/GROQ_API_KEY are available regardless of
+# whether backend.ingest (which also loads .env, for PII_HASH_SALT) has been
+# imported first -- this module must not depend on that import-order side effect.
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +34,14 @@ DEFAULT_TIMEOUT_S = 30.0
 
 # Exceptions from each provider's own SDK that should trigger falling back to the
 # other provider rather than being treated as a bug in our own code. Both SDKs'
-# rate-limit/status errors subclass their respective base APIError.
-_GEMINI_SDK_ERRORS = (genai_errors.APIError, TimeoutError)
-_GROQ_SDK_ERRORS = (groq.APIError, TimeoutError)
+# rate-limit/status errors subclass their respective base APIError. httpx.HTTPError
+# is also needed: confirmed live (not just in theory) that the google-genai SDK's
+# internal retry logic (tenacity) can exhaust its retries and re-raise a raw
+# httpx.ReadTimeout instead of wrapping it in genai_errors.APIError -- and
+# httpx.ReadTimeout does NOT subclass the builtin TimeoutError, so it would
+# otherwise crash the whole request instead of falling back to Groq.
+_GEMINI_SDK_ERRORS = (genai_errors.APIError, TimeoutError, httpx.HTTPError)
+_GROQ_SDK_ERRORS = (groq.APIError, TimeoutError, httpx.HTTPError)
 
 
 class LLMError(Exception):

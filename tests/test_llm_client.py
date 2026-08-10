@@ -5,6 +5,7 @@ no real API keys or network access are needed -- this is standard practice for u
 tests and is not the same thing as the app faking a real LLM response.
 """
 
+import httpx
 import pytest
 from google.genai import errors as genai_errors
 
@@ -44,10 +45,18 @@ def test_generate_success_gemini_only(monkeypatch):
         _make_gemini_api_error(),
         client.EmptyResponseError("empty"),
         client.TruncatedResponseError("truncated"),
+        httpx.ReadTimeout("simulated raw httpx timeout"),
     ],
-    ids=["timeout", "api_error_rate_limit", "empty_response", "truncated_response"],
+    ids=["timeout", "api_error_rate_limit", "empty_response", "truncated_response", "httpx_read_timeout"],
 )
 def test_generate_falls_back_to_groq_on_gemini_failure(monkeypatch, gemini_exception):
+    """The httpx_read_timeout case is a regression test: a live benchmark run hit a
+    real httpx.ReadTimeout raised directly by google-genai's internal retry logic
+    (tenacity) once it exhausted its own retries -- and httpx.ReadTimeout does NOT
+    subclass the builtin TimeoutError, so it crashed the whole request instead of
+    falling back to Groq until _GEMINI_SDK_ERRORS was widened to include
+    httpx.HTTPError.
+    """
     def fake_gemini(*args, **kwargs):
         raise gemini_exception
 

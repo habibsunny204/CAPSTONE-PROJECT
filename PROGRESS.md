@@ -17,11 +17,11 @@ end of every session — a fresh session has no memory of prior ones beyond what
 
 | ID | Subtask | Status | Notes |
 |----|---------|--------|-------|
-| B1 | Prompt design (schema + synonyms + few-shot) | in progress | `llm/prompts.py`, 40+ entry synonym dict + 3 few-shot examples in `configs/dataset_config.yaml`, `eval/benchmark_questions.json` (15 questions, all 5 spec categories, ground truth computed against the real 51,290-row dataset), and `eval/run_benchmark.py` (live runner + best-effort auto-scorer, logs full SQL/result/narrative per question for human cross-check) are all done. Only remaining step: actually run it. Blocked on live Gemini/Groq keys not yet present in `.env`. |
-| B2 | Pipeline (Phase 1/2/3 + sandbox + single retry) | done + tested | `llm/sandbox.py` (allowlist-based sqlglot validation, 38 exploit tests), `llm/client.py` (Gemini->Groq failover, 8 mocked tests), `llm/pipeline.py` (Phase 1/2/3 + single retry + graceful "unanswerable" handling, 5 integration tests). All logic-level tests pass without needing real API keys. |
+| B1 | Prompt design (schema + synonyms + few-shot) | done + tested | `llm/prompts.py`, 40+ entry synonym dict + 3 few-shot examples, `eval/benchmark_questions.json` (15 questions, all 5 categories), `eval/run_benchmark.py`. **Live run completed 2026-08-10: 15/15 (100%) accuracy** against real Gemini/Groq -- see `eval/results/benchmark_20260810_233113.json`. Gemini's free-tier daily quota (20 req/day) was exhausted almost immediately, so nearly every question actually exercised the live Groq fallback path, not just Gemini -- incidentally a strong real-world proof of B5's failover, not just the mocked tests. |
+| B2 | Pipeline (Phase 1/2/3 + sandbox + single retry) | done + tested | `llm/sandbox.py` (allowlist-based sqlglot validation, 38 exploit tests), `llm/client.py` (Gemini->Groq failover, 9 mocked tests), `llm/pipeline.py` (Phase 1/2/3 + single retry + graceful "unanswerable" handling, 5 integration tests). |
 | B3 | Insight generation (3 preset prompts) | done + tested | `llm/pipeline.py`: `generate_dataset_overview` (fully generic, no config needed), `generate_trend_comparison` (dims/metrics/aggs from `configs/dataset_config.yaml`'s new `insights.trend_comparison`), `generate_anomaly_report` (reuses A3's IQR profiling, picks the worst-outlier column at runtime -- data-driven, not hardcoded). 3 new tests. |
 | B4 | Conversational context (last-5-turn memory) | done + tested | `llm/memory.py`: `ConversationMemory` wraps a plain list (storage-agnostic -- Task C backs an instance with `st.session_state`), `add`/`get_history`/`reset`. 4 new tests (eviction beyond 5 turns, reset, defensive copy on read). |
-| B5 | Reliability (validation, loading indicator, Gemini->Groq failover) | in progress | Backend piece done as part of B2's `llm/client.py`: empty/truncated-response validation, timeout/rate-limit/API-error failover, `elapsed_ms` timing, and provider logging (now explicitly asserted against log records, not just the return value). Still open: the actual loading-indicator UI with elapsed time is Task C's job (`app.py` doesn't exist yet) -- will close this out when C1 lands. |
+| B5 | Reliability (validation, loading indicator, Gemini->Groq failover) | in progress | Validation/failover/timing/logging done and **live-proven** (see B1 note above) -- also caught and fixed a real bug this way: google-genai's internal retry (tenacity) can re-raise a raw `httpx.ReadTimeout` that does NOT subclass the builtin `TimeoutError`, which crashed the whole request instead of falling back to Groq until `_GEMINI_SDK_ERRORS` was widened to include `httpx.HTTPError` (regression test added). Still open: the loading-indicator UI itself is Task C's job (`app.py` doesn't exist yet). |
 
 ## Task C — Dashboard (2.0 marks)
 
@@ -52,3 +52,19 @@ end of every session — a fresh session has no memory of prior ones beyond what
   alone, scope narrowed accordingly (see A3 row above). A4 benchmark run against the
   full 51,290-row dataset: all scenarios ~75-180x under the 500ms bar. Git repo
   initialized locally (no remote). Task A is done + tested; Tasks B/C/D not started.
+- 2026-08-10: Repo connected to a GitHub remote (habibsunny204/CAPSTONE-PROJECT,
+  branch renamed master->main) via the IDE, not by the assistant. User will push
+  manually going forward -- do not run `git push` (see memory: feedback_no_auto_push).
+- 2026-08-10: Task B (B1-B5) implemented and tested, 6 commits. B2 (sandbox/client/
+  pipeline) built and tested first using only mocked calls, since no API keys were
+  available yet. Once the user added real GEMINI_API_KEY/GROQ_API_KEY to `.env`, ran
+  a live smoke test of both providers, then the full B1 benchmark: 15/15 (100%)
+  accuracy. Two real bugs found via live testing that no mock would have caught: (1)
+  `load_dotenv()` was only called in `backend/ingest.py`, so `llm/client.py` failed
+  with a KeyError when used standalone -- fixed by also loading .env in client.py;
+  (2) google-genai's internal retry can leak a raw `httpx.ReadTimeout` that doesn't
+  subclass the builtin `TimeoutError`, crashing the request instead of failing over
+  to Groq -- fixed by widening the caught-exception tuple, with a regression test
+  added. 90 tests passing overall. B1/B2/B3/B4 done + tested; B5's backend logic is
+  done and live-proven, only the UI loading indicator (Task C's job) remains open.
+  Tasks C/D not started.
