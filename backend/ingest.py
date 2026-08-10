@@ -21,8 +21,13 @@ from typing import Any
 import duckdb
 import pandas as pd
 import yaml
+from dotenv import load_dotenv
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "configs" / "dataset_config.yaml"
+
+# Loaded once at import time so PII_HASH_SALT (and future LLM API keys) are available
+# from .env without every caller having to remember to load it themselves.
+load_dotenv()
 
 
 def load_config(config_path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:

@@ -18,5 +18,5 @@ data/raw/
 .DS_Store
 Thumbs.db
 
-# Claude Code local (machine-specific) settings
-.claude/settings.local.json
+# Claude Code local tool settings/permissions (not part of the project deliverable)
+.claude/

@@ -11,6 +11,7 @@ import duckdb
 import pytest
 
 from backend import query_engine, quality, schema
+from backend.benchmark_perf import PASS_THRESHOLD_MS
 
 TABLE_NAME = "superstore"
 
@@ -306,3 +307,21 @@ def test_clean_report_shape(mini_con_fresh, dataset_config):
 
     drop_step = next(s for s in report["steps_applied"] if s["name"] == "drop_degenerate_columns")
     assert drop_step["columns_dropped"] == ["record_count"]
+
+
+# ---------------------------------------------------------------------------
+# A4 — performance (full real dataset; skipped if data/raw/ is absent)
+# ---------------------------------------------------------------------------
+
+
+def test_filtered_aggregation_under_500ms(real_con_clean, dataset_config):
+    """A representative filtered aggregation on the full ~51K-row dataset must
+    complete in well under the 500ms bar (PROJECT_SPEC.md Task A4). See
+    eval/results/perf_benchmark_*.json for the full scenario sweep and evidence.
+    """
+    table_name = dataset_config["dataset"]["table_name"]
+    _, elapsed_ms = query_engine.groupby_agg(
+        real_con_clean, table_name, ["region"], ["sales"], ["sum"],
+        filters=[{"column": "segment", "op": "=", "value": "Consumer"}],
+    )
+    assert elapsed_ms < PASS_THRESHOLD_MS

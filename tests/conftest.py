@@ -71,5 +71,5 @@ def real_con_clean(dataset_config, _pii_hash_salt):
     if not REAL_CSV_PATH.exists():
         pytest.skip("real dataset not present locally (data/raw/ is gitignored)")
     con = ingest.load(REAL_CSV_PATH, dataset_config)
-    quality.clean(con, dataset_config["dataset"]["table_name"])
+    quality.clean(con, dataset_config["dataset"]["table_name"], dataset_config)
     return con
