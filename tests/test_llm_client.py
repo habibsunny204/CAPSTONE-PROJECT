@@ -95,3 +95,20 @@ def test_generate_unrecoverable_gemini_error_is_not_swallowed(monkeypatch):
 
     with pytest.raises(KeyError):
         client.generate("system", "user")
+
+
+def test_generate_logs_which_provider_served_the_request(monkeypatch, caplog):
+    """Task B5: 'log which provider actually served each request' -- prove it
+    against the actual log records, not just the returned provider field.
+    """
+    monkeypatch.setattr(client, "_call_gemini", lambda *a, **k: "ok")
+    with caplog.at_level("INFO", logger=client.__name__):
+        client.generate("system", "user")
+    assert any("gemini" in r.message for r in caplog.records)
+
+    caplog.clear()
+    monkeypatch.setattr(client, "_call_gemini", lambda *a, **k: (_ for _ in ()).throw(TimeoutError("down")))
+    monkeypatch.setattr(client, "_call_groq", lambda *a, **k: "ok")
+    with caplog.at_level("INFO", logger=client.__name__):
+        client.generate("system", "user")
+    assert any("groq" in r.message for r in caplog.records)

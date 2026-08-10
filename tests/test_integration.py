@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from llm import client, pipeline
+from llm.memory import MAX_TURNS, ConversationMemory
 
 TABLE_NAME = "superstore"
 
@@ -117,3 +118,92 @@ def test_answer_question_uses_conversation_history(mini_con, dataset_config, mon
     pipeline.answer_question(mini_con, TABLE_NAME, dataset_config, "And how many rows is that?", history=history)
 
     assert "What is total sales?" in captured_prompts[0]
+
+
+# ---------------------------------------------------------------------------
+# B3 -- preset insight generation
+# ---------------------------------------------------------------------------
+
+
+def test_generate_dataset_overview(mini_con_clean, dataset_config, monkeypatch):
+    monkeypatch.setattr(pipeline.client, "generate", _fake_generate(
+        "This dataset has 16 rows across West and East regions.",
+    ))
+
+    insight = pipeline.generate_dataset_overview(mini_con_clean, TABLE_NAME, dataset_config)
+
+    assert insight.insight_type == "dataset_overview"
+    assert insight.data["profile"]["n_rows"] == 16
+    assert insight.narrative
+    assert insight.narrative_provider == "gemini"
+
+
+def test_generate_trend_comparison(mini_con_clean, dataset_config, monkeypatch):
+    monkeypatch.setattr(pipeline.client, "generate", _fake_generate(
+        "All fixture orders fall in 2013, so there is a single year of data.",
+    ))
+
+    insight = pipeline.generate_trend_comparison(mini_con_clean, TABLE_NAME, dataset_config)
+
+    assert insight.insight_type == "trend_comparison"
+    df = insight.data["aggregation"]
+    assert set(df.columns) == {"year", "sales_sum", "profit_sum"}
+    assert insight.narrative
+
+
+def test_generate_anomaly_report(mini_con_clean, dataset_config, monkeypatch):
+    """The fixture's deliberate Sales outlier (row 12, sales=5000) must surface."""
+    monkeypatch.setattr(pipeline.client, "generate", _fake_generate(
+        "One order has an unusually high sales value compared to the rest.",
+    ))
+
+    insight = pipeline.generate_anomaly_report(mini_con_clean, TABLE_NAME, dataset_config)
+
+    assert insight.insight_type == "anomaly_report"
+    assert insight.data["profile"]["columns"]
+    samples = insight.data["outlier_samples"]
+    assert len(samples) >= 1
+    assert insight.narrative
+
+
+# ---------------------------------------------------------------------------
+# B4 -- conversational memory
+# ---------------------------------------------------------------------------
+
+
+def test_conversation_memory_add_and_get_history():
+    memory = ConversationMemory()
+    memory.add("Q1", "SELECT 1", "A1")
+    memory.add("Q2", "SELECT 2", "A2")
+
+    history = memory.get_history()
+    assert history == [
+        {"question": "Q1", "sql": "SELECT 1", "answer": "A1"},
+        {"question": "Q2", "sql": "SELECT 2", "answer": "A2"},
+    ]
+
+
+def test_conversation_memory_evicts_oldest_beyond_max_turns():
+    memory = ConversationMemory()
+    for i in range(MAX_TURNS + 3):
+        memory.add(f"Q{i}", f"SELECT {i}", f"A{i}")
+
+    history = memory.get_history()
+    assert len(history) == MAX_TURNS
+    assert [turn["question"] for turn in history] == [f"Q{i}" for i in range(3, MAX_TURNS + 3)]
+
+
+def test_conversation_memory_reset_clears_history():
+    memory = ConversationMemory()
+    memory.add("Q1", "SELECT 1", "A1")
+    memory.reset()
+    assert memory.get_history() == []
+
+
+def test_conversation_memory_get_history_is_a_copy():
+    """Mutating the returned list must not affect internal state."""
+    memory = ConversationMemory()
+    memory.add("Q1", "SELECT 1", "A1")
+    history = memory.get_history()
+    history.append({"question": "injected", "sql": "", "answer": ""})
+    assert len(memory.get_history()) == 1

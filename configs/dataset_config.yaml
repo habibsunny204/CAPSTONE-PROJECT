@@ -89,6 +89,17 @@ quality:
     market_group: "Coarser grouping of market: US and Canada collapsed into North America. Derived from market, kept as a plausible synonym target for Task B (e.g. 'North America' as a region phrase)."
     week_num: "ISO week number of order_date. Derived from order_date, kept as a ready-made weekly grouping dimension."
 
+# Task B3: curated aggregation for the "Trend/Comparison Analysis" preset insight.
+# Keeps llm/pipeline.py generic (no Superstore column literals) -- the Dataset
+# Overview and Anomaly/Outlier Report presets need no such config since they're
+# fully data-driven (profile_report() and "the numeric column with the most IQR
+# outliers", picked at runtime, not named here).
+insights:
+  trend_comparison:
+    dims: ["year"]
+    metrics: ["sales", "profit"]
+    aggs: ["sum"]
+
 # A4's benchmark_perf.py reads these scenarios rather than hardcoding column names.
 benchmark:
   scenarios:

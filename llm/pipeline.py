@@ -18,6 +18,7 @@ from typing import Any
 import duckdb
 import pandas as pd
 
+from backend import query_engine, quality as quality_module
 from backend import schema as schema_module
 from llm import client, prompts
 from llm.sandbox import SandboxViolation, execute_safe
@@ -27,6 +28,17 @@ logger = logging.getLogger(__name__)
 
 class PipelineError(Exception):
     """A clean, user-facing failure after Phase 1/2's single retry is exhausted."""
+
+
+@dataclass
+class InsightResult:
+    """One preset insight (Task B3): the curated data that fed it and the
+    LLM-generated narrative."""
+
+    insight_type: str
+    data: dict[str, Any]
+    narrative: str
+    narrative_provider: str
 
 
 @dataclass
@@ -165,4 +177,130 @@ def answer_question(
         question=question, sql=sql, reasoning=reasoning, result=result_df,
         narrative=narrative, sql_provider=sql_provider,
         narrative_provider=narrative_provider, retried=retried,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task B3 -- preset insight generation
+# ---------------------------------------------------------------------------
+
+
+def generate_dataset_overview(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    config: dict[str, Any],
+) -> InsightResult:
+    """Preset 1: dataset shape + backend/quality.py's profiling summary, narrated
+    in plain language. Fully generic -- profile_report() and get_schema() already
+    discover columns dynamically, so no config entry is needed for this preset.
+    """
+    profile = quality_module.profile_report(con, table_name, id_column=config["dataset"].get("id_column"))
+    live_schema = schema_module.get_schema(con, table_name)
+
+    system_prompt = (
+        "You are a data analyst writing a short 'dataset overview' for a business "
+        "dashboard. You will be given a data-quality profile (row count, duplicate "
+        "count, and per-column missing % / IQR outlier counts) and the column "
+        "list. Write 3-5 sentences in Markdown describing the dataset's size and "
+        "shape and anything notable in the quality profile. Use only the numbers "
+        "given -- never invent a figure."
+    )
+    user_prompt = json.dumps(
+        {"profile": profile, "columns": [c["name"] for c in live_schema]}, indent=2, default=str
+    )
+    result = client.generate(system_prompt, user_prompt, json_mode=False)
+
+    return InsightResult(
+        insight_type="dataset_overview", data={"profile": profile},
+        narrative=result.text, narrative_provider=result.provider,
+    )
+
+
+def generate_trend_comparison(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    config: dict[str, Any],
+) -> InsightResult:
+    """Preset 2: the curated aggregation declared in configs/dataset_config.yaml's
+    insights.trend_comparison, narrated as a trend/comparison summary. The dims/
+    metrics/aggs live in config (not here) so this function stays free of
+    Superstore column-name literals.
+    """
+    spec = config["insights"]["trend_comparison"]
+    df, _ = query_engine.groupby_agg(con, table_name, spec["dims"], spec["metrics"], spec["aggs"])
+    if spec["dims"]:
+        df = df.sort_values(by=spec["dims"]).reset_index(drop=True)
+
+    system_prompt = (
+        "You are a data analyst writing a short trend/comparison summary for a "
+        "business dashboard. You will be given a small aggregated table. Write 3-5 "
+        "sentences in Markdown identifying the main trend or the biggest "
+        "differences between groups, using only numbers present in the table."
+    )
+    user_prompt = json.dumps(
+        {"columns": list(df.columns), "rows": df.to_dict(orient="records")}, indent=2, default=str
+    )
+    result = client.generate(system_prompt, user_prompt, json_mode=False)
+
+    return InsightResult(
+        insight_type="trend_comparison", data={"aggregation": df},
+        narrative=result.text, narrative_provider=result.provider,
+    )
+
+
+def generate_anomaly_report(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    config: dict[str, Any],
+) -> InsightResult:
+    """Preset 3: reuses A3's IQR outlier profiling, picks the numeric column with
+    the most outliers -- chosen at runtime from the data, never hardcoded -- pulls a
+    small sample of the actual outlier rows via A2's filtered_query(), and narrates
+    a plain-language anomaly report.
+    """
+    profile = quality_module.profile_report(con, table_name, id_column=config["dataset"].get("id_column"))
+    outlier_columns = [c for c in profile["columns"] if (c["n_outliers_iqr"] or 0) > 0]
+
+    if not outlier_columns:
+        narrative = "No IQR-based outliers were detected in any numeric column."
+        return InsightResult(
+            insight_type="anomaly_report", data={"profile": profile},
+            narrative=narrative, narrative_provider="none",
+        )
+
+    worst = max(outlier_columns, key=lambda c: c["n_outliers_iqr"])
+    bounds = worst["iqr_bounds"]
+    id_column = config["dataset"].get("id_column")
+    dims = [id_column] if id_column else []
+
+    below, _ = query_engine.filtered_query(
+        con, table_name,
+        filters=[{"column": worst["name"], "op": "<", "value": bounds["lower"]}],
+        dims=dims, metrics=[worst["name"]],
+    )
+    above, _ = query_engine.filtered_query(
+        con, table_name,
+        filters=[{"column": worst["name"], "op": ">", "value": bounds["upper"]}],
+        dims=dims, metrics=[worst["name"]],
+    )
+    sample_df = pd.concat([below, above], ignore_index=True).head(10)
+
+    system_prompt = (
+        "You are a data analyst writing a short anomaly/outlier report for a "
+        "business dashboard. You will be given the numeric column with the most "
+        "IQR-based outliers, its normal (IQR) bounds, the total outlier count, and "
+        "a small sample of the actual outlier rows. Write 2-4 sentences in "
+        "Markdown plainly describing the anomaly, using only the numbers given."
+    )
+    user_prompt = json.dumps({
+        "column": worst["name"],
+        "iqr_bounds": bounds,
+        "n_outliers_total": worst["n_outliers_iqr"],
+        "sample_outlier_rows": sample_df.to_dict(orient="records"),
+    }, indent=2, default=str)
+    result = client.generate(system_prompt, user_prompt, json_mode=False)
+
+    return InsightResult(
+        insight_type="anomaly_report", data={"profile": profile, "outlier_samples": sample_df},
+        narrative=result.text, narrative_provider=result.provider,
     )

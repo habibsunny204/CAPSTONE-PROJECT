@@ -19,9 +19,9 @@ end of every session — a fresh session has no memory of prior ones beyond what
 |----|---------|--------|-------|
 | B1 | Prompt design (schema + synonyms + few-shot) | in progress | `llm/prompts.py`, 40+ entry synonym dict + 3 few-shot examples in `configs/dataset_config.yaml`, and `eval/benchmark_questions.json` (15 questions, all 5 spec categories, ground truth computed against the real 51,290-row dataset) are done. Blocked on live keys: the required "test against >=10 phrasings, log results" run via `eval/run_benchmark.py` hasn't happened yet. |
 | B2 | Pipeline (Phase 1/2/3 + sandbox + single retry) | done + tested | `llm/sandbox.py` (allowlist-based sqlglot validation, 38 exploit tests), `llm/client.py` (Gemini->Groq failover, 8 mocked tests), `llm/pipeline.py` (Phase 1/2/3 + single retry + graceful "unanswerable" handling, 5 integration tests). All logic-level tests pass without needing real API keys. |
-| B3 | Insight generation (3 preset prompts) | not started | |
-| B4 | Conversational context (last-5-turn memory) | not started | |
-| B5 | Reliability (validation, loading indicator, Gemini->Groq failover) | not started | |
+| B3 | Insight generation (3 preset prompts) | done + tested | `llm/pipeline.py`: `generate_dataset_overview` (fully generic, no config needed), `generate_trend_comparison` (dims/metrics/aggs from `configs/dataset_config.yaml`'s new `insights.trend_comparison`), `generate_anomaly_report` (reuses A3's IQR profiling, picks the worst-outlier column at runtime -- data-driven, not hardcoded). 3 new tests. |
+| B4 | Conversational context (last-5-turn memory) | done + tested | `llm/memory.py`: `ConversationMemory` wraps a plain list (storage-agnostic -- Task C backs an instance with `st.session_state`), `add`/`get_history`/`reset`. 4 new tests (eviction beyond 5 turns, reset, defensive copy on read). |
+| B5 | Reliability (validation, loading indicator, Gemini->Groq failover) | in progress | Backend piece done as part of B2's `llm/client.py`: empty/truncated-response validation, timeout/rate-limit/API-error failover, `elapsed_ms` timing, and provider logging (now explicitly asserted against log records, not just the return value). Still open: the actual loading-indicator UI with elapsed time is Task C's job (`app.py` doesn't exist yet) -- will close this out when C1 lands. |
 
 ## Task C — Dashboard (2.0 marks)
 
