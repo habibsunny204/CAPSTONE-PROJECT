@@ -67,20 +67,21 @@ quality:
   # zero information content — dropped as a documented structural cleaning step.
   drop_after_profiling:
     - "record_count"
-  # Low-cardinality string columns eligible for casing standardization (trim +
-  # canonical casing). Applied generically by quality.py, not hardcoded per-column.
+  # Closed-vocabulary business-category columns eligible for casing standardization
+  # (trim + title-case). Deliberately narrow: verified against the real dataset that
+  # naive title-casing is safe here (small, fixed, English-word vocabularies) but
+  # actively wrong elsewhere -- market/market_group/region contain intentional
+  # abbreviations (US, EU, LATAM, APAC, EMEA) that title-casing mangles
+  # ("EU" -> "Eu"), and country/state/city are real-world proper nouns where naive
+  # title-casing incorrectly capitalizes connector words ("Rio de Janeiro" ->
+  # "Rio De Janeiro") and mangles apostrophes ("Cote d'Ivoire" -> "Cote D'Ivoire").
+  # Those columns are left as-is from the source data rather than "corrected" wrong.
   categorical_casing_columns:
     - "category"
     - "segment"
     - "ship_mode"
     - "order_priority"
-    - "region"
-    - "market"
-    - "market_group"
     - "sub_category"
-    - "country"
-    - "state"
-    - "city"
   # market_group and week_num are kept (not dropped) — deliberate decision, documented
   # here rather than silently made, per CLAUDE.md's instruction. Both are derived from
   # other columns, not independent data.

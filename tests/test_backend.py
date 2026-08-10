@@ -10,7 +10,7 @@ tests/fixtures/generate_mini_superstore.py for how that fixture was constructed.
 import duckdb
 import pytest
 
-from backend import query_engine, schema
+from backend import query_engine, quality, schema
 
 TABLE_NAME = "superstore"
 
@@ -226,3 +226,83 @@ def test_filtered_query_empty_result(mini_con):
         dims=["row_id"], metrics=["sales"],
     )
     assert len(df) == 0
+
+
+# ---------------------------------------------------------------------------
+# A3 — data quality (profiling, cleaning)
+# ---------------------------------------------------------------------------
+
+
+def test_profile_missing_pct(mini_con, dataset_config):
+    """profit has 2 nulls (rows 7, 8) out of 16 rows -> 12.5% missing."""
+    report = quality.profile_report(mini_con, TABLE_NAME, id_column=dataset_config["dataset"]["id_column"])
+    cols = {c["name"]: c for c in report["columns"]}
+    assert cols["profit"]["missing_pct"] == pytest.approx(12.5)
+
+
+def test_profile_duplicate_count(mini_con, dataset_config):
+    """Row 13 is an exact duplicate of row 1 (excluding row_id) -- exactly 1 extra
+    duplicate row, out of 16 total.
+    """
+    report = quality.profile_report(mini_con, TABLE_NAME, id_column=dataset_config["dataset"]["id_column"])
+    assert report["n_rows"] == 16
+    assert report["n_duplicate_rows"] == 1
+
+
+def test_profile_iqr_outliers(mini_con, dataset_config):
+    """Sales IQR bounds hand-computed from the sorted fixture values (linear
+    interpolation, matching DuckDB's quantile_cont): Q1=99.75, Q3=132.5, so the
+    upper fence is 181.625 -- only 200 and 5000 exceed it (2 outliers).
+    """
+    report = quality.profile_report(mini_con, TABLE_NAME, id_column=dataset_config["dataset"]["id_column"])
+    cols = {c["name"]: c for c in report["columns"]}
+    sales = cols["sales"]
+    assert sales["n_outliers_iqr"] == 2
+    assert sales["iqr_bounds"]["q1"] == pytest.approx(99.75)
+    assert sales["iqr_bounds"]["q3"] == pytest.approx(132.5)
+    assert sales["iqr_bounds"]["lower"] == pytest.approx(50.625)
+    assert sales["iqr_bounds"]["upper"] == pytest.approx(181.625)
+
+
+def test_profile_non_numeric_column_has_no_iqr(mini_con, dataset_config):
+    report = quality.profile_report(mini_con, TABLE_NAME, id_column=dataset_config["dataset"]["id_column"])
+    cols = {c["name"]: c for c in report["columns"]}
+    assert cols["region"]["n_outliers_iqr"] is None
+    assert cols["region"]["iqr_bounds"] is None
+
+
+def test_clean_parses_dates(mini_con_clean):
+    cols = {c["name"]: c for c in schema.get_schema(mini_con_clean, TABLE_NAME)}
+    assert cols["order_date"]["dtype"] == "TIMESTAMP"
+    assert cols["ship_date"]["dtype"] == "TIMESTAMP"
+
+
+def test_clean_standardizes_casing(mini_con_clean):
+    """Row 11's deliberately mis-cased 'consumer' becomes 'Consumer' after cleaning."""
+    row = mini_con_clean.execute(
+        f'SELECT segment FROM "{TABLE_NAME}" WHERE row_id = 11'
+    ).fetchone()
+    assert row[0] == "Consumer"
+
+
+def test_clean_drops_degenerate_column(mini_con_clean):
+    names = {c["name"] for c in schema.get_schema(mini_con_clean, TABLE_NAME)}
+    assert "record_count" not in names
+    with pytest.raises(duckdb.Error):
+        mini_con_clean.execute(f'SELECT record_count FROM "{TABLE_NAME}"')
+
+
+def test_clean_report_shape(mini_con_fresh, dataset_config):
+    """clean()'s own report documents exactly what it changed -- the deliberate
+    'decide, don't silently drop/keep' record for record_count/market_group/week_num.
+    """
+    report = quality.clean(mini_con_fresh, TABLE_NAME, dataset_config)
+    step_names = {s["name"] for s in report["steps_applied"]}
+    assert step_names == {"parse_dates", "standardize_categorical_casing", "drop_degenerate_columns"}
+
+    casing_step = next(s for s in report["steps_applied"] if s["name"] == "standardize_categorical_casing")
+    assert "segment" in casing_step["columns"]
+    assert casing_step["rows_changed"] == 1
+
+    drop_step = next(s for s in report["steps_applied"] if s["name"] == "drop_degenerate_columns")
+    assert drop_step["columns_dropped"] == ["record_count"]

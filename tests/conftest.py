@@ -50,8 +50,17 @@ def mini_con(dataset_config, _pii_hash_salt):
 def mini_con_clean(dataset_config, _pii_hash_salt):
     """An in-memory DuckDB connection over the mini fixture, ingested and cleaned."""
     con = ingest.load(MINI_CSV_PATH, dataset_config)
-    quality.clean(con, dataset_config["dataset"]["table_name"])
+    quality.clean(con, dataset_config["dataset"]["table_name"], dataset_config)
     return con
+
+
+@pytest.fixture()
+def mini_con_fresh(dataset_config, _pii_hash_salt):
+    """A function-scoped, uncleaned connection -- for tests that call clean()
+    themselves and need to inspect its returned report without disturbing the
+    session-scoped mini_con_clean state shared by other tests.
+    """
+    return ingest.load(MINI_CSV_PATH, dataset_config)
 
 
 @pytest.fixture(scope="session")
