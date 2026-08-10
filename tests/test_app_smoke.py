@@ -40,9 +40,23 @@ def test_app_renders_title(app):
     assert any("Superstore AI Analytics" in t.value for t in app.title)
 
 
-def test_app_renders_three_tabs(app):
-    """C1 requires st.tabs() for Overview / Exploration / AI Assistant."""
-    assert len(app.tabs) == 3
+def test_app_renders_the_expected_tabs(app):
+    """C1 requires st.tabs() for Overview / Exploration / AI Assistant; Advanced
+    is added on top of those for Task D's two features, which nest two more tabs
+    inside it (so app.tabs, which is flat, sees six in total).
+    """
+    labels = [t.label for t in app.tabs]
+    for expected in ("Overview", "Exploration", "AI Assistant", "Advanced"):
+        assert expected in labels
+    assert "Anomaly detection" in labels
+    assert "Comparative analysis" in labels
+
+
+def test_advanced_tab_has_both_task_d_controls(app):
+    """Task D's two features are both reachable in the UI."""
+    button_labels = [b.label for b in app.button]
+    assert "Detect" in button_labels
+    assert "Compare" in button_labels
 
 
 def test_sidebar_has_the_configured_filters(app):

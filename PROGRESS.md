@@ -36,8 +36,8 @@ end of every session — a fresh session has no memory of prior ones beyond what
 
 | ID | Subtask | Status | Notes |
 |----|---------|--------|-------|
-| D1 | Anomaly detection (extends A3's IQR logic) | not started | |
-| D2 | Comparative analysis (two regions/date ranges) | not started | |
+| D1 | Anomaly detection (extends A3's IQR logic) | done + tested | `features/anomaly_detection.py` reuses A3's IQR profiling (no reimplementation), flags the specific rows responsible, ranks them by how many IQRs past the fence they sit, and has the LLM explain each. Detection is deterministic and LLM-free -- a test asserts it never calls the model -- so what gets flagged is provable and the LLM only describes it. 10 tests. |
+| D2 | Comparative analysis (two regions/date ranges) | done + tested | `features/comparative_analysis.py` runs A2's query engine once per side (dimension values or date ranges), computes deltas in Python, and has the LLM narrate. Paired grouped-bar chart normalises metrics to % of the larger side so different scales stay legible, with real figures in the hover and table. 10 tests. |
 
 ## Session log
 
@@ -91,3 +91,21 @@ end of every session — a fresh session has no memory of prior ones beyond what
   plus direct chart-image rendering -- no browser automation tool was available, so
   the UI has not been eyeballed in an actual browser. Worth a manual look.
   Task D not started.
+- 2026-08-11: Reworked the AI Assistant tab into a chat interface after the user
+  ran the app and pointed out the input sat at the top with answers buried below
+  the preset insights. Now a scrollable transcript with the input beneath it,
+  chronological order, presets appending into the same conversation. Note
+  `st.chat_input` only pins to the viewport bottom in the app's main body -- inside
+  `st.tabs()` it renders inline (confirmed in the installed Streamlit's docs), so
+  the transcript's bounded height is what keeps the input in a stable place.
+- 2026-08-11: Task D (D1+D2) implemented and tested, added as a fourth "Advanced"
+  tab (an addition to C1's three tabs, not a change to them). 156 tests passing.
+  Both features verified live in the running app. Two real bugs caught this way:
+  (1) `SUM()` over zero matching rows returns NULL -> NaN, and the guard
+  `value or 0` did NOT catch it because NaN is truthy in Python, so an empty
+  comparison side showed NaN instead of 0; (2) both features handed raw floats to
+  the LLM, which echoed them verbatim -- narratives read
+  "-6.434059163572309 percent". Values are now rounded before entering the prompt,
+  with regression tests asserting nothing unrounded reaches it.
+  **All four tasks (A-D) are now done + tested.** Remaining: the 5-mark
+  presentation/report component, and a manual browser pass over the UI.

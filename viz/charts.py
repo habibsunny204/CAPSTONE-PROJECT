@@ -39,9 +39,14 @@ def _bindings(config: dict[str, Any], chart_name: str) -> dict[str, Any]:
     return config["charts"]["curated_bindings"][chart_name]
 
 
-def _style(fig: go.Figure, config: dict[str, Any], title: str,
-           x_title: str | None = None, y_title: str | None = None) -> go.Figure:
-    """Apply the shared template, title, and axis labels to any figure."""
+def apply_theme(fig: go.Figure, config: dict[str, Any], title: str,
+                x_title: str | None = None, y_title: str | None = None) -> go.Figure:
+    """Apply the shared template, title, and axis labels to any figure.
+
+    Public so other modules that build their own figures (e.g. Task D's paired
+    comparison chart) can render in the same visual system rather than
+    reimplementing the layout or reaching into this module's internals.
+    """
     fig.update_layout(
         template=_theme(config)["template"],
         title=title,
@@ -92,7 +97,7 @@ def time_series(df: pd.DataFrame, config: dict[str, Any], freq: str = "ME") -> g
             secondary_y=(i == 1),
         )
 
-    fig = _style(fig, config, binding["title"], x_title="Order Date")
+    fig = apply_theme(fig, config, binding["title"], x_title="Order Date")
     for i, metric in enumerate(metrics):
         fig.update_yaxes(title_text=_prettify(metric), secondary_y=(i == 1))
     fig.update_layout(hovermode="x unified")
@@ -114,7 +119,7 @@ def choropleth(df: pd.DataFrame, config: dict[str, Any]) -> go.Figure:
     fig.update_traces(
         hovertemplate=f"%{{location}}<br>{_prettify(metric)}: %{{z:,.0f}}<extra></extra>"
     )
-    fig = _style(fig, config, binding["title"])
+    fig = apply_theme(fig, config, binding["title"])
     fig.update_layout(geo=dict(showframe=False, projection_type="natural earth"))
     return fig
 
@@ -137,7 +142,7 @@ def correlation_heatmap(df: pd.DataFrame, config: dict[str, Any]) -> go.Figure:
         hovertemplate="%{y} vs %{x}<br>Correlation: %{z}<extra></extra>",
         colorbar=dict(title="r"),
     ))
-    return _style(fig, config, binding["title"])
+    return apply_theme(fig, config, binding["title"])
 
 
 def box_plot(df: pd.DataFrame, config: dict[str, Any]) -> go.Figure:
@@ -169,7 +174,7 @@ def box_plot(df: pd.DataFrame, config: dict[str, Any]) -> go.Figure:
             hovertemplate=f"{name}<br>{_prettify(metric)}: %{{y:,.2f}}<extra></extra>",
         ))
 
-    fig = _style(fig, config, f"{binding['title']} (outliers beyond whiskers not shown)",
+    fig = apply_theme(fig, config, f"{binding['title']} (outliers beyond whiskers not shown)",
                  x_title=_prettify(category_col), y_title=_prettify(metric))
     fig.update_layout(showlegend=False)
 
@@ -197,7 +202,7 @@ def sunburst(df: pd.DataFrame, config: dict[str, Any]) -> go.Figure:
     fig.update_traces(
         hovertemplate=f"%{{label}}<br>{_prettify(metric)}: %{{value:,.0f}}<extra></extra>"
     )
-    return _style(fig, config, binding["title"])
+    return apply_theme(fig, config, binding["title"])
 
 
 def scatter_regression(df: pd.DataFrame, config: dict[str, Any], sample_size: int = 5000) -> go.Figure:
@@ -232,7 +237,7 @@ def scatter_regression(df: pd.DataFrame, config: dict[str, Any], sample_size: in
     ))
 
     subtitle = f"{binding['title']} (trend: {slope:,.1f} per unit)"
-    return _style(fig, config, subtitle, x_title=_prettify(x_col), y_title=_prettify(y_col))
+    return apply_theme(fig, config, subtitle, x_title=_prettify(x_col), y_title=_prettify(y_col))
 
 
 def stacked_bar(df: pd.DataFrame, config: dict[str, Any], drill_into: str | None = None) -> go.Figure:
@@ -259,7 +264,7 @@ def stacked_bar(df: pd.DataFrame, config: dict[str, Any], drill_into: str | None
         ))
 
     title = f"{binding['title']} -- {drill_into}" if drill_into else binding["title"]
-    fig = _style(fig, config, title, x_title=_prettify(primary), y_title=_prettify(metric))
+    fig = apply_theme(fig, config, title, x_title=_prettify(primary), y_title=_prettify(metric))
     fig.update_layout(barmode="stack")
     return fig
 
@@ -310,7 +315,7 @@ def build_from_selection(
     else:
         return None
 
-    return _style(fig, config, title or f"{_prettify(str(y))} by {_prettify(str(x))}",
+    return apply_theme(fig, config, title or f"{_prettify(str(y))} by {_prettify(str(x))}",
                   x_title=_prettify(str(x)), y_title=_prettify(str(y)))
 
 
