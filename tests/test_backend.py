@@ -10,7 +10,7 @@ tests/fixtures/generate_mini_superstore.py for how that fixture was constructed.
 import duckdb
 import pytest
 
-from backend import schema
+from backend import query_engine, schema
 
 TABLE_NAME = "superstore"
 
@@ -96,3 +96,133 @@ def test_schema_n_unique_and_n_null_correct(mini_con, column, expected_n_unique,
     cols = {c["name"]: c for c in schema.get_schema(mini_con, TABLE_NAME)}
     assert cols[column]["n_unique"] == expected_n_unique
     assert cols[column]["n_null"] == expected_n_null
+
+
+# ---------------------------------------------------------------------------
+# A2 — query engine (groupby_agg, filtered_query)
+# ---------------------------------------------------------------------------
+
+
+def test_groupby_agg_basic_sum(mini_con):
+    """Sum of sales by region, hand-computed from the fixture: West rows
+    (1,2,3,4,9,11,12,13,14,16) sum to 6180; East rows (5,6,7,8,10,15) sum to 597.
+    """
+    df, _ = query_engine.groupby_agg(mini_con, TABLE_NAME, ["region"], ["sales"], ["sum"])
+    totals = dict(zip(df["region"], df["sales_sum"]))
+    assert totals == {"West": 6180, "East": 597}
+
+
+def test_groupby_agg_multiple_metrics_and_aggs(mini_con):
+    """sum+avg over two metrics at once, hand-computed: West profit sums to 599
+    over 10 rows (avg 59.9); East profit sums to 39 over 4 non-null rows (avg 9.75,
+    since AVG ignores the 2 nulls in rows 7/8).
+    """
+    df, _ = query_engine.groupby_agg(
+        mini_con, TABLE_NAME, ["region"], ["sales", "profit"], ["sum", "avg"]
+    )
+    by_region = df.set_index("region")
+    assert by_region.loc["West", "sales_sum"] == 6180
+    assert by_region.loc["West", "sales_avg"] == pytest.approx(618.0)
+    assert by_region.loc["West", "profit_sum"] == 599
+    assert by_region.loc["West", "profit_avg"] == pytest.approx(59.9)
+    assert by_region.loc["East", "profit_sum"] == 39
+    assert by_region.loc["East", "profit_avg"] == pytest.approx(9.75)
+
+
+def test_groupby_agg_returns_elapsed_ms(mini_con):
+    """The second return value is a non-negative float timing the DuckDB call."""
+    _, elapsed_ms = query_engine.groupby_agg(mini_con, TABLE_NAME, ["region"], ["sales"], ["sum"])
+    assert isinstance(elapsed_ms, float)
+    assert elapsed_ms >= 0
+
+
+def test_groupby_agg_unknown_column_raises(mini_con):
+    with pytest.raises(ValueError):
+        query_engine.groupby_agg(mini_con, TABLE_NAME, ["not_a_column"], ["sales"], ["sum"])
+
+
+def test_groupby_agg_invalid_agg_raises(mini_con):
+    with pytest.raises(ValueError):
+        query_engine.groupby_agg(mini_con, TABLE_NAME, ["region"], ["sales"], ["bogus_agg"])
+
+
+def test_groupby_agg_with_filters(mini_con):
+    """Filtered aggregation: sum of sales by region where segment = 'Consumer'
+    (exact match on raw, uncleaned data -- row 11's mis-cased 'consumer' is excluded).
+    Matching rows: West {1,2,12,13} = 5350; East {5,6,15} = 299.
+    """
+    df, _ = query_engine.groupby_agg(
+        mini_con, TABLE_NAME, ["region"], ["sales"], ["sum"],
+        filters=[{"column": "segment", "op": "=", "value": "Consumer"}],
+    )
+    totals = dict(zip(df["region"], df["sales_sum"]))
+    assert totals == {"West": 5350, "East": 299}
+
+
+def test_filtered_query_basic_equality_filter(mini_con):
+    df, _ = query_engine.filtered_query(
+        mini_con, TABLE_NAME,
+        filters=[{"column": "region", "op": "=", "value": "East"}],
+        dims=["row_id"], metrics=["sales"],
+    )
+    assert len(df) == 6
+    assert set(df["sales"]) == {90, 110, 95, 105, 98, 99}
+
+
+def test_filtered_query_multiple_filters_and_combination(mini_con):
+    """Multi-condition filter (region=West AND segment=Corporate): rows 3, 4, 14."""
+    df, _ = query_engine.filtered_query(
+        mini_con, TABLE_NAME,
+        filters=[
+            {"column": "region", "op": "=", "value": "West"},
+            {"column": "segment", "op": "=", "value": "Corporate"},
+        ],
+        dims=["row_id"], metrics=["sales"],
+    )
+    assert set(df["row_id"]) == {3, 4, 14}
+    assert set(df["sales"]) == {200, 120, 115}
+
+
+def test_filtered_query_between_filter_on_dates(mini_con):
+    """order_date BETWEEN Feb 1 and Mar 1 2013 inclusive: rows 5-9 (5 rows). Works
+    against the still-string ISO-formatted dates because ISO 8601 strings sort
+    lexically in chronological order -- A2 doesn't depend on A3's date parsing.
+    """
+    df, _ = query_engine.filtered_query(
+        mini_con, TABLE_NAME,
+        filters=[{
+            "column": "order_date", "op": "between",
+            "value": ["2013-02-01 00:00:00.000", "2013-03-01 00:00:00.000"],
+        }],
+        dims=["row_id"], metrics=["order_date"],
+    )
+    assert set(df["row_id"]) == {5, 6, 7, 8, 9}
+
+
+def test_filtered_query_in_operator(mini_con):
+    """segment IN (Corporate, Home Office): rows 3,4,7,8,14 + 9,10,16 = 8 rows."""
+    df, _ = query_engine.filtered_query(
+        mini_con, TABLE_NAME,
+        filters=[{"column": "segment", "op": "in", "value": ["Corporate", "Home Office"]}],
+        dims=["row_id"], metrics=["segment"],
+    )
+    assert len(df) == 8
+
+
+def test_filtered_query_is_null_operator(mini_con):
+    df, _ = query_engine.filtered_query(
+        mini_con, TABLE_NAME,
+        filters=[{"column": "profit", "op": "is_null"}],
+        dims=["row_id"], metrics=["profit"],
+    )
+    assert set(df["row_id"]) == {7, 8}
+
+
+def test_filtered_query_empty_result(mini_con):
+    """A filter matching nothing returns an empty DataFrame, not an error."""
+    df, _ = query_engine.filtered_query(
+        mini_con, TABLE_NAME,
+        filters=[{"column": "region", "op": "=", "value": "Nowhere"}],
+        dims=["row_id"], metrics=["sales"],
+    )
+    assert len(df) == 0

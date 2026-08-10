@@ -9,7 +9,7 @@ end of every session — a fresh session has no memory of prior ones beyond what
 | ID | Subtask | Status | Notes |
 |----|---------|--------|-------|
 | A1 | Ingestion & schema (`backend/ingest.py`, `backend/schema.py`) | done + tested | Customer.ID PII decision resolved: hashed (sha256+salt) to `customer_id_hash`, salt from `PII_HASH_SALT` env var. `Customer.Name` dropped entirely. Full raw CSV moved to `data/raw/global_superstore.csv`. 9 tests passing in `tests/test_backend.py`. |
-| A2 | Query engine (`backend/query_engine.py`: `groupby_agg`, `filtered_query`) | not started | |
+| A2 | Query engine (`backend/query_engine.py`: `groupby_agg`, `filtered_query`) | done + tested | `groupby_agg` gained an optional `filters` param beyond the spec's literal signature so "filtered aggregation" is one reusable call (flagged deviation, see plan doc). Both functions also take an explicit `table_name` param, matching `schema.get_schema`'s pattern. 12 new tests passing. |
 | A3 | Data quality (`backend/quality.py`: profiling, cleaning, IQR outliers) | not started | Owns the deliberate keep/drop call on `record_count`/`market_group`/`week_num`. |
 | A4 | Performance benchmark (`backend/benchmark_perf.py`, <500ms evidence) | not started | |
 
