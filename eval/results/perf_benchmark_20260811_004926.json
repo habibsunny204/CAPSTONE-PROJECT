@@ -1,0 +1,104 @@
+{
+  "generated_at": "2026-08-10T18:49:26.694637+00:00",
+  "python_version": "3.14.0 (tags/v3.14.0:ebf955d, Oct  7 2025, 10:15:03) [MSC v.1944 64 bit (AMD64)]",
+  "duckdb_version": "1.5.5",
+  "n_rows": 51290,
+  "pass_threshold_ms": 500.0,
+  "n_warmup": 2,
+  "n_iterations": 30,
+  "scenarios": [
+    {
+      "name": "sales_by_region_consumer",
+      "params": {
+        "dims": [
+          "region"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "aggs": [
+          "sum"
+        ],
+        "filters": [
+          {
+            "column": "segment",
+            "op": "=",
+            "value": "Consumer"
+          }
+        ]
+      },
+      "n_iterations": 30,
+      "stats_ms": {
+        "min_ms": 3.808099998423131,
+        "median_ms": 4.53525000193622,
+        "mean_ms": 4.594053333130432,
+        "max_ms": 5.498399998032255,
+        "p95_ms": 5.279199998767581
+      },
+      "passed": true
+    },
+    {
+      "name": "sales_profit_by_region_category_2012plus",
+      "params": {
+        "dims": [
+          "region",
+          "category"
+        ],
+        "metrics": [
+          "sales",
+          "profit"
+        ],
+        "aggs": [
+          "sum",
+          "avg"
+        ],
+        "filters": [
+          {
+            "column": "order_date",
+            "op": ">=",
+            "value": "2012-01-01"
+          }
+        ]
+      },
+      "n_iterations": 30,
+      "stats_ms": {
+        "min_ms": 6.296400002611335,
+        "median_ms": 6.933800001206691,
+        "mean_ms": 7.245863333325057,
+        "max_ms": 10.359000003518304,
+        "p95_ms": 9.22790000186069
+      },
+      "passed": true
+    },
+    {
+      "name": "avg_profit_high_discount_orders",
+      "params": {
+        "dims": [
+          "category"
+        ],
+        "metrics": [
+          "profit"
+        ],
+        "aggs": [
+          "avg"
+        ],
+        "filters": [
+          {
+            "column": "discount",
+            "op": ">",
+            "value": 0.2
+          }
+        ]
+      },
+      "n_iterations": 30,
+      "stats_ms": {
+        "min_ms": 2.413199999864446,
+        "median_ms": 2.836550000210991,
+        "mean_ms": 3.0104133329587057,
+        "max_ms": 4.386299999168841,
+        "p95_ms": 4.271499998139916
+      },
+      "passed": true
+    }
+  ]
+}
