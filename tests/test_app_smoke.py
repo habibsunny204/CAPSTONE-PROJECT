@@ -69,13 +69,20 @@ def test_filters_actually_narrow_the_data(app):
     assert after != before
 
 
-def test_ai_tab_has_question_input_and_preset_buttons(app):
+def test_ai_tab_has_chat_input_and_preset_buttons(app):
     """The AI Assistant tab's controls exist without any LLM call being made."""
-    assert any(w.key == "ai_question" for w in app.text_input)
+    assert any(w.key == "chat_input" for w in app.chat_input)
     button_labels = [b.label for b in app.button]
-    assert "Ask" in button_labels
+    assert "Clear chat" in button_labels
     assert "Dataset overview" in button_labels
     assert "Anomaly report" in button_labels
+
+
+def test_ai_tab_shows_an_empty_state_prompt(app):
+    """With no conversation yet, the transcript invites a first question rather
+    than rendering blank.
+    """
+    assert any("Ask me anything" in m.value for m in app.markdown)
 
 
 def test_exports_are_not_generated_on_every_rerun(app):
@@ -98,17 +105,17 @@ def test_exports_are_not_generated_on_every_rerun(app):
 
 @pytest.mark.live_llm
 def test_ask_a_question_end_to_end(app):
-    """The full user journey against live providers: type a question, click Ask,
-    get a narrative and an auto-selected chart.
+    """The full user journey against live providers: type into the chat box, get
+    back a narrative and an auto-selected chart in the transcript.
 
     Not run by default -- it costs real API quota and depends on a provider being
     up. Run explicitly with: pytest -m live_llm
     """
-    app.text_input(key="ai_question").set_value("What is the total revenue by region?")
-    app.button(key="ask_button").click().run()
+    question = "What is the total revenue by region?"
+    app.chat_input(key="chat_input").set_value(question).run()
 
     assert not app.exception, [str(e) for e in app.exception]
 
-    headings = [m.value for m in app.markdown if m.value.startswith("####")]
-    assert any("total revenue by region" in h.lower() for h in headings)
+    rendered = [m.value for m in app.markdown]
+    assert question in rendered, "the user's own message should appear in the transcript"
     assert any(s.label == "Chart type" for s in app.selectbox)

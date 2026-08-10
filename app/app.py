@@ -72,8 +72,9 @@ def _init_session_state() -> None:
     must survive Streamlit's rerun-on-every-interaction model).
     """
     st.session_state.setdefault("memory", ConversationMemory())
-    st.session_state.setdefault("answers", [])
-    st.session_state.setdefault("insights", {})
+    # One chronological list of conversation turns (typed questions, preset
+    # insights, and errors alike), so the transcript renders in a single pass.
+    st.session_state.setdefault("turns", [])
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +166,12 @@ def render_overview_tab(data: dict[str, Any], filtered: pd.DataFrame) -> None:
 
     with st.expander("Cleaning steps applied"):
         for step in data["clean_report"]["steps_applied"]:
-            st.markdown(f"**{step['name']}** &mdash; {step}")
+            details = ", ".join(
+                f"{key.replace('_', ' ')}: {value}"
+                for key, value in step.items()
+                if key != "name" and value not in (None, [], {}, 0)
+            )
+            st.markdown(f"**{step['name'].replace('_', ' ')}** &mdash; {details or 'no changes needed'}")
 
     with st.expander("Per-column quality profile"):
         st.dataframe(pd.DataFrame(profile["columns"]), width='stretch')
@@ -241,73 +247,105 @@ def _chart_with_export(figure, filename_stem: str) -> None:
 
 
 def render_ai_tab(data: dict[str, Any], applied_filters: dict[str, Any]) -> None:
-    """The natural-language pipeline (B2), preset insights (B3), conversational
-    memory (B4), AI-driven chart selection (C3), and per-answer export (C4).
+    """A chat interface over the natural-language pipeline (B2), preset insights
+    (B3), conversational memory (B4), AI-driven chart selection (C3), and
+    per-answer export (C4).
+
+    Laid out as a scrollable transcript with the input directly beneath it, so the
+    conversation reads oldest-to-newest and you type where you last read -- rather
+    than typing at the top and hunting for the answer further down the page.
+
+    st.chat_input renders inline here rather than pinned to the viewport bottom:
+    Streamlit only pins it when it's in the app's main body, and nesting it in any
+    layout container (st.tabs included) switches it to inline. Bounding the
+    transcript's height is what keeps the input in a stable place on screen.
     """
     config, table_name = data["config"], data["table_name"]
     # A dedicated cursor for LLM-generated SQL, kept separate from the connection
     # ingest/quality used to build the table (see llm/sandbox.py).
     llm_con = data["con"].cursor()
 
-    st.subheader("Ask a question")
-    st.caption(
+    header_column, reset_column = st.columns([4, 1])
+    header_column.caption(
         "Answers are generated live by Gemini (falling back to Groq), turned into "
         "validated read-only SQL, executed in a sandbox, then narrated."
     )
-
-    question = st.text_input(
-        "Your question",
-        placeholder="e.g. What is the total revenue by region?",
-        key="ai_question",
-    )
-    ask_column, reset_column = st.columns([1, 1])
-    asked = ask_column.button("Ask", type="primary", width='stretch', key="ask_button")
-    if reset_column.button("Reset conversation", width='stretch', key="reset_button"):
+    if reset_column.button("Clear chat", width='stretch', key="reset_button"):
         st.session_state["memory"].reset()
-        st.session_state["answers"] = []
+        st.session_state["turns"] = []
         st.rerun()
 
-    if asked and question.strip():
-        _run_question(llm_con, table_name, config, question.strip())
+    _render_preset_buttons(llm_con, table_name, config)
 
-    _render_preset_insights(llm_con, table_name, config)
+    transcript = st.container(height=560)
+    with transcript:
+        if not st.session_state["turns"]:
+            st.chat_message("assistant").markdown(
+                "Ask me anything about the Superstore data &mdash; for example, "
+                "*what is the total revenue by region?* or *which sub-category is "
+                "least profitable?* You can also use the buttons above for a "
+                "ready-made insight."
+            )
+        for index, turn in enumerate(st.session_state["turns"]):
+            _render_turn(turn, index, config, applied_filters, data)
 
-    for index, answer in enumerate(reversed(st.session_state["answers"])):
-        _render_answer(answer, index, config, applied_filters, data)
+    question = st.chat_input("Ask a question about the data", key="chat_input")
+    if question and question.strip():
+        _run_question(llm_con, table_name, config, question.strip(), transcript)
+        st.rerun()
 
 
-def _run_question(llm_con, table_name: str, config: dict[str, Any], question: str) -> None:
-    """Run one question through the pipeline, with a loading indicator and elapsed
-    time (Task B5's UI half), and store the result in session state.
+def _run_question(llm_con, table_name: str, config: dict[str, Any], question: str,
+                  transcript) -> None:
+    """Run one question through the pipeline and append it to the conversation.
+
+    The loading indicator (Task B5's UI half) is written into `transcript` so
+    progress appears in the conversation where the answer will land, not detached
+    at the bottom of the page.
     """
-    status = st.status("Thinking...", expanded=True)
-    started = time.perf_counter()
-    try:
-        status.write("Generating SQL...")
-        result = pipeline.answer_question(
-            llm_con, table_name, config, question,
-            history=st.session_state["memory"].get_history(),
-        )
-        elapsed = time.perf_counter() - started
-        status.update(label=f"Answered in {elapsed:.1f}s via {result.sql_provider}", state="complete")
+    with transcript:
+        st.chat_message("user").markdown(question)
+        with st.chat_message("assistant"):
+            status = st.status("Thinking...", expanded=True)
+            started = time.perf_counter()
+            try:
+                status.write("Generating SQL...")
+                result = pipeline.answer_question(
+                    llm_con, table_name, config, question,
+                    history=st.session_state["memory"].get_history(),
+                )
+                elapsed = time.perf_counter() - started
+                status.update(
+                    label=f"Answered in {elapsed:.1f}s via {result.sql_provider}", state="complete"
+                )
 
-        st.session_state["memory"].add(question, result.sql, result.narrative)
-        st.session_state["answers"].append({
-            "question": question, "sql": result.sql, "reasoning": result.reasoning,
-            "result": result.result, "narrative": result.narrative,
-            "provider": result.sql_provider, "retried": result.retried, "elapsed": elapsed,
-        })
-    except pipeline.PipelineError as error:
-        status.update(label="Couldn't answer that one", state="error")
-        st.error(str(error))
-    except Exception as error:  # noqa: BLE001 - surface any provider/network failure cleanly
-        status.update(label="Something went wrong", state="error")
-        st.error(f"{type(error).__name__}: {error}")
+                st.session_state["memory"].add(question, result.sql, result.narrative)
+                st.session_state["turns"].append({
+                    "kind": "question", "question": question, "sql": result.sql,
+                    "reasoning": result.reasoning, "result": result.result,
+                    "narrative": result.narrative, "provider": result.sql_provider,
+                    "retried": result.retried, "elapsed": elapsed,
+                })
+            except pipeline.PipelineError as error:
+                status.update(label="Couldn't answer that one", state="error")
+                st.session_state["turns"].append(
+                    {"kind": "error", "question": question, "message": str(error)}
+                )
+            except Exception as error:  # noqa: BLE001 - surface provider/network failures cleanly
+                status.update(label="Something went wrong", state="error")
+                st.session_state["turns"].append({
+                    "kind": "error", "question": question,
+                    "message": f"{type(error).__name__}: {error}",
+                })
 
 
-def _render_preset_insights(llm_con, table_name: str, config: dict[str, Any]) -> None:
-    """The three preset insight buttons (Task B3)."""
-    st.subheader("Preset insights")
+def _render_preset_buttons(llm_con, table_name: str, config: dict[str, Any]) -> None:
+    """The three preset insights (Task B3), offered as suggested prompts.
+
+    Their output is appended to the same conversation as a normal assistant turn,
+    so presets and typed questions share one transcript instead of accumulating in
+    a separate stack of expanders.
+    """
     presets = {
         "Dataset overview": pipeline.generate_dataset_overview,
         "Trend analysis": pipeline.generate_trend_comparison,
@@ -319,34 +357,55 @@ def _render_preset_insights(llm_con, table_name: str, config: dict[str, Any]) ->
             with st.spinner(f"Generating {label.lower()}..."):
                 try:
                     insight = generator(llm_con, table_name, config)
-                    st.session_state["insights"][label] = insight
+                    st.session_state["turns"].append({
+                        "kind": "insight", "question": label,
+                        "narrative": insight.narrative,
+                        "provider": insight.narrative_provider,
+                        "aggregation": insight.data.get("aggregation"),
+                        "outlier_samples": insight.data.get("outlier_samples"),
+                    })
                 except Exception as error:  # noqa: BLE001
-                    st.error(f"{label} failed: {type(error).__name__}: {error}")
+                    st.session_state["turns"].append({
+                        "kind": "error", "question": label,
+                        "message": f"{type(error).__name__}: {error}",
+                    })
+            st.rerun()
 
-    for label, insight in st.session_state["insights"].items():
-        with st.expander(f"{label} (generated by {insight.narrative_provider})", expanded=True):
-            st.markdown(insight.narrative)
-            aggregation = insight.data.get("aggregation")
-            if aggregation is not None:
-                st.dataframe(aggregation, width='stretch')
-            samples = insight.data.get("outlier_samples")
+
+def _render_turn(turn: dict[str, Any], index: int, config: dict[str, Any],
+                 applied_filters: dict[str, Any], data: dict[str, Any]) -> None:
+    """Render one conversation turn as a user/assistant message pair."""
+    st.chat_message("user").markdown(turn["question"])
+
+    with st.chat_message("assistant"):
+        if turn["kind"] == "error":
+            st.error(turn["message"])
+            return
+
+        if turn["kind"] == "insight":
+            st.markdown(turn["narrative"])
+            st.caption(f"Preset insight, generated by {turn['provider']}")
+            if turn.get("aggregation") is not None:
+                st.dataframe(turn["aggregation"], width='stretch')
+            samples = turn.get("outlier_samples")
             if samples is not None and not samples.empty:
                 st.caption("Sample flagged rows")
                 st.dataframe(samples, width='stretch')
+            return
+
+        _render_answer(turn, index, config, applied_filters, data)
 
 
 def _render_answer(answer: dict[str, Any], index: int, config: dict[str, Any],
                    applied_filters: dict[str, Any], data: dict[str, Any]) -> None:
-    """Render one stored answer: narrative, auto-selected chart with a manual
+    """Render one answered question: narrative, auto-selected chart with a manual
     override, the result table, and PDF/Word export.
     """
-    st.divider()
-    st.markdown(f"#### {answer['question']}")
+    st.markdown(answer["narrative"])
     st.caption(
         f"Answered by {answer['provider']} in {answer['elapsed']:.1f}s"
         + (" (after one retry)" if answer["retried"] else "")
     )
-    st.markdown(answer["narrative"])
 
     result_df = answer["result"]
     figure = None
