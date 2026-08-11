@@ -1,0 +1,227 @@
+# Region -> member countries (ISO 3166-1 alpha-3), used only by the choropleth in
+# viz/charts.py.
+#
+# WHY THIS FILE EXISTS
+# The Global E-Commerce Sales dataset records geography at continent level only -- its
+# `region` column holds six values (Asia, North America, Europe, South America,
+# Australia, Africa) and there is no country column. Plotly's choropleth needs country
+# shapes to draw, so each region is expanded to its member countries and every country
+# in a region is filled with that region's aggregate value.
+#
+# HONEST-ENCODING NOTE
+# This paints countries, but it is not country-level data and must never be read as
+# such. viz/charts.py binds the hover text to the REGION name and the REGION total, so
+# hovering Japan shows "Asia -- <Asia's total>", not a Japan figure. The chart title
+# says "by Region" for the same reason, and tests/test_viz.py asserts the hover
+# template never references %{location}.
+#
+# WHY ISO-3 RATHER THAN COUNTRY NAMES
+# Plotly emits a DeprecationWarning for `locationmode: "country names"` -- the name
+# lookup it uses is changing, and names are ambiguous across vintages anyway
+# (Myanmar/Burma, Eswatini/Swaziland, Czechia/Czech Republic). ISO-3 codes are stable
+# and unambiguous, so the binding sets `locationmode: "ISO-3"` and this file lists
+# codes. The English name is kept as an inline comment for readability.
+#
+# Kept in its own file rather than inside dataset_config.yaml purely for readability.
+# It is still configuration, not code, so the generic/specific boundary in
+# PROJECT_SPEC.md Section 2 holds.
+#
+# Transcontinental cases are judgment calls, resolved here once and documented rather
+# than left implicit:
+#   - RUS Russia -> Europe (conventional geopolitical grouping, though most of its
+#                   landmass is in Asia; it is the largest single visual footprint)
+#   - TUR Turkey -> Asia
+#   - EGY Egypt  -> Africa
+#   - Central America and the Caribbean -> North America (standard geographic usage)
+#   - "Australia" is the dataset's label for what is geographically Oceania, so it
+#     covers the Pacific island nations too.
+
+Asia:
+  - AFG  # Afghanistan
+  - ARM  # Armenia
+  - AZE  # Azerbaijan
+  - BHR  # Bahrain
+  - BGD  # Bangladesh
+  - BTN  # Bhutan
+  - BRN  # Brunei
+  - KHM  # Cambodia
+  - CHN  # China
+  - CYP  # Cyprus
+  - GEO  # Georgia
+  - IND  # India
+  - IDN  # Indonesia
+  - IRN  # Iran
+  - IRQ  # Iraq
+  - ISR  # Israel
+  - JPN  # Japan
+  - JOR  # Jordan
+  - KAZ  # Kazakhstan
+  - KWT  # Kuwait
+  - KGZ  # Kyrgyzstan
+  - LAO  # Laos
+  - LBN  # Lebanon
+  - MYS  # Malaysia
+  - MDV  # Maldives
+  - MNG  # Mongolia
+  - MMR  # Myanmar
+  - NPL  # Nepal
+  - PRK  # North Korea
+  - OMN  # Oman
+  - PAK  # Pakistan
+  - PHL  # Philippines
+  - QAT  # Qatar
+  - SAU  # Saudi Arabia
+  - SGP  # Singapore
+  - KOR  # South Korea
+  - LKA  # Sri Lanka
+  - SYR  # Syria
+  - TWN  # Taiwan
+  - TJK  # Tajikistan
+  - THA  # Thailand
+  - TLS  # Timor-Leste
+  - TUR  # Turkey
+  - TKM  # Turkmenistan
+  - ARE  # United Arab Emirates
+  - UZB  # Uzbekistan
+  - VNM  # Vietnam
+  - YEM  # Yemen
+
+Europe:
+  - ALB  # Albania
+  - AND  # Andorra
+  - AUT  # Austria
+  - BLR  # Belarus
+  - BEL  # Belgium
+  - BIH  # Bosnia and Herzegovina
+  - BGR  # Bulgaria
+  - HRV  # Croatia
+  - CZE  # Czechia
+  - DNK  # Denmark
+  - EST  # Estonia
+  - FIN  # Finland
+  - FRA  # France
+  - DEU  # Germany
+  - GRC  # Greece
+  - HUN  # Hungary
+  - ISL  # Iceland
+  - IRL  # Ireland
+  - ITA  # Italy
+  - LVA  # Latvia
+  - LIE  # Liechtenstein
+  - LTU  # Lithuania
+  - LUX  # Luxembourg
+  - MLT  # Malta
+  - MDA  # Moldova
+  - MCO  # Monaco
+  - MNE  # Montenegro
+  - NLD  # Netherlands
+  - MKD  # North Macedonia
+  - NOR  # Norway
+  - POL  # Poland
+  - PRT  # Portugal
+  - ROU  # Romania
+  - RUS  # Russia
+  - SMR  # San Marino
+  - SRB  # Serbia
+  - SVK  # Slovakia
+  - SVN  # Slovenia
+  - ESP  # Spain
+  - SWE  # Sweden
+  - CHE  # Switzerland
+  - UKR  # Ukraine
+  - GBR  # United Kingdom
+
+Africa:
+  - DZA  # Algeria
+  - AGO  # Angola
+  - BEN  # Benin
+  - BWA  # Botswana
+  - BFA  # Burkina Faso
+  - BDI  # Burundi
+  - CMR  # Cameroon
+  - CAF  # Central African Republic
+  - TCD  # Chad
+  - COD  # DR Congo
+  - COG  # Republic of the Congo
+  - DJI  # Djibouti
+  - EGY  # Egypt
+  - GNQ  # Equatorial Guinea
+  - ERI  # Eritrea
+  - SWZ  # Eswatini
+  - ETH  # Ethiopia
+  - GAB  # Gabon
+  - GMB  # Gambia
+  - GHA  # Ghana
+  - GIN  # Guinea
+  - GNB  # Guinea-Bissau
+  - CIV  # Ivory Coast
+  - KEN  # Kenya
+  - LSO  # Lesotho
+  - LBR  # Liberia
+  - LBY  # Libya
+  - MDG  # Madagascar
+  - MWI  # Malawi
+  - MLI  # Mali
+  - MRT  # Mauritania
+  - MAR  # Morocco
+  - MOZ  # Mozambique
+  - NAM  # Namibia
+  - NER  # Niger
+  - NGA  # Nigeria
+  - RWA  # Rwanda
+  - SEN  # Senegal
+  - SLE  # Sierra Leone
+  - SOM  # Somalia
+  - ZAF  # South Africa
+  - SSD  # South Sudan
+  - SDN  # Sudan
+  - TZA  # Tanzania
+  - TGO  # Togo
+  - TUN  # Tunisia
+  - UGA  # Uganda
+  - ZMB  # Zambia
+  - ZWE  # Zimbabwe
+
+North America:
+  - BHS  # Bahamas
+  - BLZ  # Belize
+  - CAN  # Canada
+  - CRI  # Costa Rica
+  - CUB  # Cuba
+  - DOM  # Dominican Republic
+  - SLV  # El Salvador
+  - GRL  # Greenland
+  - GTM  # Guatemala
+  - HTI  # Haiti
+  - HND  # Honduras
+  - JAM  # Jamaica
+  - MEX  # Mexico
+  - NIC  # Nicaragua
+  - PAN  # Panama
+  - PRI  # Puerto Rico
+  - TTO  # Trinidad and Tobago
+  - USA  # United States
+
+South America:
+  - ARG  # Argentina
+  - BOL  # Bolivia
+  - BRA  # Brazil
+  - CHL  # Chile
+  - COL  # Colombia
+  - ECU  # Ecuador
+  - FLK  # Falkland Islands
+  - GUY  # Guyana
+  - PRY  # Paraguay
+  - PER  # Peru
+  - SUR  # Suriname
+  - URY  # Uruguay
+  - VEN  # Venezuela
+
+Australia:
+  - AUS  # Australia
+  - FJI  # Fiji
+  - NCL  # New Caledonia
+  - NZL  # New Zealand
+  - PNG  # Papua New Guinea
+  - SLB  # Solomon Islands
+  - VUT  # Vanuatu

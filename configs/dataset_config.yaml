@@ -1,195 +1,181 @@
-# Dataset configuration for the Global Superstore capstone project.
+# Dataset configuration for the Global E-Commerce Sales capstone project.
 #
 # This is the single place dataset-specific detail is allowed to live (PROJECT_SPEC.md
 # Section 2's generic/specific boundary): the raw-to-normalized column rename map, PII
 # handling rules, the synonym dictionary, and curated-chart column bindings. Every
-# other module reads from this file rather than hardcoding Superstore column names as
-# string literals.
+# other module reads from this file rather than hardcoding column names as string
+# literals.
+#
+# The dataset is 500,000 transaction rows across 10 columns, spanning 2022-01-01 to
+# 2024-01-01. It has no nulls and no duplicate rows in the raw file -- the quality
+# profiling in Task A3 confirms this rather than assuming it.
 
 dataset:
-  raw_csv_path: "data/raw/global_superstore.csv"
-  table_name: "superstore"
-  encoding: "utf-8-sig"
-  # Surrogate key, always unique by construction — excluded from A3's duplicate-row
-  # detection (otherwise that metric would trivially always read 0).
-  id_column: "row_id"
+  raw_csv_path: "data/raw/global_ecommerce_sales.csv"
+  table_name: "ecommerce_sales"
+  encoding: "utf-8"
+  # No id_column: this dataset has no surrogate key or order identifier (unlike
+  # Superstore's Row.ID), so every column is genuine data and full-row duplicate
+  # detection in A3 is meaningful without needing to exclude anything. Consumers read
+  # this key with .get(), so its absence is handled.
 
 # PII handling (PROJECT_SPEC.md Section 2 hard gate): resolved before any schema JSON
-# derived from this data can reach an LLM prompt. Customer.Name has zero analytical
-# value and is dropped outright. Customer.ID is pseudonymous but re-identifiable
-# against public copies of this dataset, so it is hashed (not dropped) to preserve
-# unique/repeat-customer analytics while breaking the identity linkage.
+# derived from this data can reach an LLM prompt. There is no customer-name column in
+# this dataset, so nothing is dropped outright. Customer ID is pseudonymous but
+# re-identifiable against other copies of this dataset, so it is hashed (not dropped)
+# to preserve unique/repeat-customer analytics while breaking the identity linkage.
 pii:
-  drop_columns:
-    - "Customer.Name"
+  drop_columns: []
   hash_columns:
-    "Customer.ID": "customer_id_hash"
+    "Customer ID": "customer_id_hash"
   hash_salt_env_var: "PII_HASH_SALT"
   hash_length: 16
 
-# Raw dot-separated header -> normalized snake_case name. Applied after the PII step
-# above (Customer.ID/Customer.Name are handled by the pii section, not here).
+# Raw header -> normalized snake_case name. Applied after the PII step above
+# ("Customer ID" is handled by the pii section, not here).
 columns:
   rename_map:
-    "Category": "category"
-    "City": "city"
-    "Country": "country"
-    "Discount": "discount"
-    "Market": "market"
-    "记录数": "record_count"
-    "Order.Date": "order_date"
-    "Order.ID": "order_id"
-    "Order.Priority": "order_priority"
-    "Product.ID": "product_id"
-    "Product.Name": "product_name"
-    "Profit": "profit"
-    "Quantity": "quantity"
+    "Transaction Date": "transaction_date"
     "Region": "region"
-    "Row.ID": "row_id"
-    "Sales": "sales"
-    "Segment": "segment"
-    "Ship.Date": "ship_date"
-    "Ship.Mode": "ship_mode"
-    "Shipping.Cost": "shipping_cost"
-    "State": "state"
-    "Sub.Category": "sub_category"
-    "Year": "year"
-    "Market2": "market_group"
-    "weeknum": "week_num"
+    "Product": "product"
+    "Category": "category"
+    "Price": "price"
+    "Quantity": "quantity"
+    # Renamed with an explicit _pct suffix because this column is a percentage on a
+    # 0-30 scale, NOT a 0-1 fraction. The name carries that unit into the schema JSON
+    # the LLM sees, which is the cheapest available defence against the model writing
+    # `discount > 0.2` when the user asks for "more than 20% discount".
+    "Discount (%)": "discount_pct"
+    "Total Revenue": "total_revenue"
+    "Payment Method": "payment_method"
 
 # Task A3 (quality.py) reads this section to decide what to clean, rather than
 # hardcoding column names in the cleaning code.
 quality:
   date_columns:
-    - "order_date"
-    - "ship_date"
-  # record_count (raw 记录数) is a constant-value Tableau row-counter artifact with
-  # zero information content — dropped as a documented structural cleaning step.
-  drop_after_profiling:
-    - "record_count"
+    - "transaction_date"
+  # Nothing to drop: unlike Superstore (which carried a constant-value Tableau
+  # row-counter artifact), every column here has real information content. Kept as an
+  # explicit empty list rather than removed, so the decision is visible.
+  drop_after_profiling: []
   # Closed-vocabulary business-category columns eligible for casing standardization
-  # (trim + title-case). Deliberately narrow: verified against the real dataset that
-  # naive title-casing is safe here (small, fixed, English-word vocabularies) but
-  # actively wrong elsewhere -- market/market_group/region contain intentional
-  # abbreviations (US, EU, LATAM, APAC, EMEA) that title-casing mangles
-  # ("EU" -> "Eu"), and country/state/city are real-world proper nouns where naive
-  # title-casing incorrectly capitalizes connector words ("Rio de Janeiro" ->
-  # "Rio De Janeiro") and mangles apostrophes ("Cote d'Ivoire" -> "Cote D'Ivoire").
-  # Those columns are left as-is from the source data rather than "corrected" wrong.
+  # (trim + title-case). Deliberately narrow, on the same reasoning as the rest of this
+  # file: title-casing is only safe where the vocabulary is small, fixed and ordinary
+  # English. payment_method is deliberately EXCLUDED -- it contains "PayPal", which
+  # naive title-casing mangles to "Paypal". product is excluded as a high-cardinality
+  # (10,000 distinct) synthetic identifier, not a business category.
   categorical_casing_columns:
     - "category"
-    - "segment"
-    - "ship_mode"
-    - "order_priority"
-    - "sub_category"
-  # market_group and week_num are kept (not dropped) — deliberate decision, documented
-  # here rather than silently made, per CLAUDE.md's instruction. Both are derived from
-  # other columns, not independent data.
-  derived_columns:
-    market_group: "Coarser grouping of market: US and Canada collapsed into North America. Derived from market, kept as a plausible synonym target for Task B (e.g. 'North America' as a region phrase)."
-    week_num: "ISO week number of order_date. Derived from order_date, kept as a ready-made weekly grouping dimension."
+    - "region"
+  # Calendar parts derived from transaction_date during cleaning. This dataset has no
+  # Year column of its own (Superstore did), and the Trend Analysis preset insight
+  # needs a discrete time dimension to group by -- deriving these restores that
+  # capability rather than degrading the preset into a non-time comparison.
+  derive_date_parts:
+    transaction_date:
+      year: "year"
+      month: "month"
 
 # Task B3: curated aggregation for the "Trend/Comparison Analysis" preset insight.
-# Keeps llm/pipeline.py generic (no Superstore column literals) -- the Dataset
-# Overview and Anomaly/Outlier Report presets need no such config since they're
-# fully data-driven (profile_report() and "the numeric column with the most IQR
-# outliers", picked at runtime, not named here).
+# Keeps llm/pipeline.py generic (no column literals) -- the Dataset Overview and
+# Anomaly/Outlier Report presets need no such config since they're fully data-driven
+# (profile_report() and "the numeric column with the most IQR outliers", picked at
+# runtime, not named here).
 insights:
   trend_comparison:
     dims: ["year"]
-    metrics: ["sales", "profit"]
+    metrics: ["total_revenue", "quantity"]
     aggs: ["sum"]
 
 # A4's benchmark_perf.py reads these scenarios rather than hardcoding column names.
 benchmark:
   scenarios:
-    - name: "sales_by_region_consumer"
+    - name: "revenue_by_region_credit_card"
       dims: ["region"]
-      metrics: ["sales"]
+      metrics: ["total_revenue"]
       aggs: ["sum"]
       filters:
-        - {column: "segment", op: "=", value: "Consumer"}
-    - name: "sales_profit_by_region_category_2012plus"
+        - {column: "payment_method", op: "=", value: "Credit Card"}
+    - name: "revenue_quantity_by_region_category_2023plus"
       dims: ["region", "category"]
-      metrics: ["sales", "profit"]
+      metrics: ["total_revenue", "quantity"]
       aggs: ["sum", "avg"]
       filters:
-        - {column: "order_date", op: ">=", value: "2012-01-01"}
-    - name: "avg_profit_high_discount_orders"
+        - {column: "transaction_date", op: ">=", value: "2023-01-01"}
+    - name: "avg_revenue_high_discount_transactions"
       dims: ["category"]
-      metrics: ["profit"]
+      metrics: ["total_revenue"]
       aggs: ["avg"]
       filters:
-        - {column: "discount", op: ">", value: 0.2}
+        - {column: "discount_pct", op: ">", value: 20}
 
 # Task B1: informal-phrase -> actual column name, injected into every SQL-generation
 # prompt alongside the introspected schema JSON (llm/prompts.py reads this; the
-# phrases themselves are only ever rendered as prompt text, never executed, so
-# casing here just needs to read naturally).
+# phrases themselves are only ever rendered as prompt text, never executed, so casing
+# here just needs to read naturally).
 synonyms:
-  revenue: sales
-  income: profit
-  earnings: profit
-  margin: profit
-  loss: profit
-  "% off": discount
-  "percent off": discount
-  "discount rate": discount
-  "discount percentage": discount
-  priority: order_priority
-  urgency: order_priority
-  "shipping method": ship_mode
-  "delivery method": ship_mode
-  "shipping type": ship_mode
-  "freight cost": shipping_cost
-  "shipping fee": shipping_cost
-  "delivery cost": shipping_cost
-  "product category": category
-  "product type": category
-  subcategory: sub_category
-  "product line": sub_category
-  "customer type": segment
-  "customer segment": segment
-  "purchase date": order_date
-  "sale date": order_date
-  "delivery date": ship_date
+  revenue: total_revenue
+  sales: total_revenue
+  turnover: total_revenue
+  "total sales": total_revenue
+  "order value": total_revenue
+  "amount spent": total_revenue
+  "unit price": price
+  "list price": price
+  "item price": price
   units: quantity
   "units sold": quantity
   "number ordered": quantity
-  nation: country
-  "world region": market
-  continent: market
-  "sales region": region
-  province: state
-  town: city
+  "items purchased": quantity
+  discount: discount_pct
+  "% off": discount_pct
+  "percent off": discount_pct
+  "discount rate": discount_pct
+  "discount percentage": discount_pct
+  continent: region
+  "world region": region
+  market: region
+  territory: region
+  "product category": category
+  "product type": category
+  "product line": category
+  department: category
+  item: product
+  sku: product
+  "product name": product
+  "payment type": payment_method
+  "payment option": payment_method
+  "how they paid": payment_method
+  "purchase date": transaction_date
+  "sale date": transaction_date
+  "order date": transaction_date
+  customer: customer_id_hash
   "unique customers": customer_id_hash
   "repeat customers": customer_id_hash
-  "order number": order_id
-  sku: product_id
-  "item name": product_name
-  "week number": week_num
+  "calendar year": year
   "fiscal year": year
+  "month number": month
 
-# Task B1: 2-3 few-shot question -> SQL examples, in the exact structured-output
-# shape Phase 1 (llm/pipeline.py) asks the LLM to produce. Dataset-specific by
-# nature (they reference real column names), so centralized here rather than
-# hardcoded in llm/prompts.py, consistent with this file's role as the one place
-# dataset-specific detail is allowed to live.
+# Task B1: 2-3 few-shot question -> SQL examples, in the exact structured-output shape
+# Phase 1 (llm/pipeline.py) asks the LLM to produce. Dataset-specific by nature (they
+# reference real column names), so centralized here rather than hardcoded in
+# llm/prompts.py, consistent with this file's role as the one place dataset-specific
+# detail is allowed to live.
 few_shot_examples:
   - question: "What is the total revenue by region?"
-    reasoning: "'Revenue' is a synonym for sales. Group by region and sum sales."
-    sql: "SELECT region, SUM(sales) AS total_sales FROM superstore GROUP BY region ORDER BY total_sales DESC"
-  - question: "What is the average profit for orders with more than 20% discount?"
-    reasoning: "'More than 20% discount' filters discount > 0.2 (discount is stored as a fraction, not a percentage)."
-    sql: "SELECT AVG(profit) AS avg_profit FROM superstore WHERE discount > 0.2"
-  - question: "Show me the top 5 sub-categories by profit in the West region."
-    reasoning: "Filter to region = 'West', group by sub_category, sum profit, sort descending, limit 5."
-    sql: "SELECT sub_category, SUM(profit) AS total_profit FROM superstore WHERE region = 'West' GROUP BY sub_category ORDER BY total_profit DESC LIMIT 5"
+    reasoning: "'Revenue' maps to total_revenue. Group by region and sum total_revenue."
+    sql: "SELECT region, SUM(total_revenue) AS revenue FROM ecommerce_sales GROUP BY region ORDER BY revenue DESC"
+  - question: "What is the average order value for transactions with more than 20% discount?"
+    reasoning: "discount_pct is stored as a percentage on a 0-30 scale, not a 0-1 fraction, so 'more than 20% discount' is discount_pct > 20 (not > 0.2). 'Order value' maps to total_revenue."
+    sql: "SELECT AVG(total_revenue) AS avg_order_value FROM ecommerce_sales WHERE discount_pct > 20"
+  - question: "Show me the top 5 categories by revenue in Europe."
+    reasoning: "Filter to region = 'Europe', group by category, sum total_revenue, sort descending, limit 5."
+    sql: "SELECT category, SUM(total_revenue) AS revenue FROM ecommerce_sales WHERE region = 'Europe' GROUP BY category ORDER BY revenue DESC LIMIT 5"
 
 # Task C2: which columns feed each of the curated charts. viz/charts.py reads these
-# rather than hardcoding column names, so the dataset-specific detail stays in this
-# one file (PROJECT_SPEC.md Section 2). viz/auto_select.py needs no bindings at all --
-# it keys off result *shape*, never column identity.
+# rather than hardcoding column names, so the dataset-specific detail stays in this one
+# file (PROJECT_SPEC.md Section 2). viz/auto_select.py needs no bindings at all -- it
+# keys off result *shape*, never column identity.
 charts:
   # Shared display settings so every chart looks like part of one system.
   theme:
@@ -212,41 +198,55 @@ charts:
 
   curated_bindings:
     time_series:
-      date_column: "order_date"
-      metrics: ["sales", "profit"]
-      title: "Revenue and Profit Over Time"
+      date_column: "transaction_date"
+      metrics: ["total_revenue", "quantity"]
+      title: "Revenue and Units Sold Over Time"
+      x_title: "Transaction Date"
     choropleth:
-      location_column: "country"
-      metric: "sales"
+      # This dataset's geography stops at continent level -- there is no country
+      # column. Rather than drop the map, each region is expanded to its member
+      # countries (region_countries_path) and every country in a region is shaded with
+      # that region's total. PROJECT_SPEC.md:197 explicitly permits "choropleth by
+      # Country/Region". The hover text is bound to the region name and the region
+      # total, never a country name, so the chart cannot be misread as country-level
+      # data it does not have.
+      #
+      # ISO-3 rather than "country names": Plotly deprecates the country-name lookup,
+      # and ISO codes are unambiguous across Natural Earth vintages.
+      location_column: "region"
+      metric: "total_revenue"
       color_scale: "Blues"
-      title: "Total Sales by Country"
+      locationmode: "ISO-3"
+      region_countries_path: "configs/region_countries.yaml"
+      title: "Total Revenue by Region"
     correlation_heatmap:
-      columns: ["sales", "profit", "quantity", "discount", "shipping_cost"]
+      columns: ["price", "quantity", "discount_pct", "total_revenue"]
       color_scale: "RdBu"
       title: "Correlation Between Numeric Measures"
     box_plot:
       category_column: "category"
-      metric: "profit"
-      title: "Profit Distribution by Category"
+      metric: "total_revenue"
+      title: "Revenue Distribution by Category"
     sunburst:
-      path: ["category", "sub_category", "segment"]
-      metric: "sales"
-      title: "Sales by Category, Sub-Category and Segment"
+      path: ["region", "category", "payment_method"]
+      metric: "total_revenue"
+      title: "Revenue by Region, Category and Payment Method"
     scatter_regression:
-      x: "discount"
-      y: "profit"
-      title: "Discount vs Profit"
+      x: "discount_pct"
+      y: "total_revenue"
+      point_label: "Transactions"
+      title: "Discount vs Revenue"
     stacked_bar:
       primary_dim: "region"
       secondary_dim: "category"
-      metric: "sales"
-      title: "Sales by Region and Category"
+      metric: "total_revenue"
+      title: "Revenue by Region and Category"
 
 # Task C1: which columns become global sidebar filters, and how each is rendered.
 # Kept here (not in app.py) for the same reason as everything else in this file.
 filters:
-  - column: "order_date"
-    label: "Order date range"
+  - column: "transaction_date"
+    label: "Transaction date range"
     type: "date_range"
   - column: "region"
     label: "Region"
@@ -254,6 +254,26 @@ filters:
   - column: "category"
     label: "Category"
     type: "multiselect"
-  - column: "segment"
-    label: "Segment"
+  - column: "payment_method"
+    label: "Payment method"
     type: "multiselect"
+
+# Labels used by the dashboard chrome and exported reports. Kept here so retargeting
+# the platform to another dataset stays a config change rather than a code edit.
+app:
+  title: "E-Commerce AI Analytics"
+  dataset_display_name: "Global E-Commerce Sales"
+  # Headline metrics on the Overview tab. Each is skipped if its column is absent.
+  kpis:
+    - {label: "Total revenue", column: "total_revenue", agg: "sum", format: ",.0f"}
+    - {label: "Units sold", column: "quantity", agg: "sum", format: ",.0f"}
+    - {label: "Customers", column: "customer_id_hash", agg: "nunique", format: ",.0f"}
+  # Shown in the AI Assistant tab's empty state -- questions this dataset can answer.
+  example_questions:
+    - "What is the total revenue by region?"
+    - "Which category sells the most units?"
+    - "What is the average order value for transactions with more than 20% discount?"
+  # Extra columns carried alongside flagged rows in the anomaly report (Task D1).
+  anomaly_context_columns: ["transaction_date", "region", "category", "product", "payment_method"]
+  # Default metric selection in comparative analysis (Task D2).
+  comparison_default_metrics: ["total_revenue", "quantity"]
