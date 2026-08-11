@@ -462,3 +462,56 @@ def test_anomaly_overlay_chart_renders_from_a_seeded_report():
     # available proxy for "the overlay actually built and rendered".
     assert any("Triangles mark the flagged rows" in c.value for c in at.caption)
     assert any(s.value == "Flagged rows" for s in at.subheader)
+
+
+# ---------------------------------------------------------------------------
+# Chart image export coverage (Task C4)
+# ---------------------------------------------------------------------------
+
+
+def test_overview_charts_have_image_export(app):
+    """C4 asks for PNG/SVG export of individual charts. It previously covered only
+    the Exploration tab -- the two Overview charts (time series, choropleth) had no
+    download control at all.
+    """
+    downloads = [e for e in app.expander if e.label == "Download this chart"]
+    # 6 from Exploration (box_plot, scatter_regression, correlation_heatmap, sunburst,
+    # animated_bar, stacked_bar) + 2 from Overview (time_series, choropleth).
+    assert len(downloads) >= 8
+
+
+def test_ai_chart_has_image_export():
+    """The AI-selected chart (C3) was the second uncovered figure -- assert its
+    download control renders alongside a seeded answer.
+    """
+    import pandas as pd
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    at.session_state["turns"] = [_seeded_answer(pd.DataFrame({
+        "region": ["Asia", "Europe"], "total_revenue": [7594.0, 706.0],
+    }))]
+    at.run()
+
+    assert not at.exception, [str(e) for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+    assert any(e.label == "Download this chart" for e in at.expander)
+
+
+def test_comparison_chart_has_image_export():
+    """The D5 comparison chart was the third uncovered figure."""
+    from features.comparative_analysis import ComparisonResult, ComparisonSide
+
+    left = ComparisonSide(label="Asia", filters=[], totals={"total_revenue": 7594.0}, n_rows=100)
+    right = ComparisonSide(label="Europe", filters=[], totals={"total_revenue": 706.0}, n_rows=80)
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    at.session_state["comparison_result"] = ComparisonResult(
+        dimension="region", metrics=["total_revenue"], left=left, right=right,
+        deltas={"total_revenue": {"absolute": 6888.0, "percent": 975.5}},
+        narrative="Asia outperforms Europe.", provider="gemini",
+    )
+    at.run()
+
+    assert not at.exception, [str(e) for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+    assert any(e.label == "Download this chart" for e in at.expander)
