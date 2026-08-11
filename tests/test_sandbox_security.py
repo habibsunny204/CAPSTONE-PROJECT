@@ -40,6 +40,18 @@ EXPLOIT_ATTEMPTS = [
     ("subquery_unknown_table", "SELECT * FROM ecommerce_sales WHERE product IN (SELECT id FROM secrets)"),
     ("pragma_table_function", "SELECT * FROM pragma_table_info('ecommerce_sales')"),
     ("information_schema", "SELECT * FROM information_schema.tables"),
+    # Qualified references to the real table. These are not merely redundant spellings
+    # -- the dashboard scopes the LLM's connection to the sidebar filters by resolving
+    # the bare name through search_path to a filtered view (backend/scope.py), so a
+    # qualified name would read around the filter to every row in the table.
+    ("schema_qualified_table", "SELECT * FROM main.ecommerce_sales"),
+    ("catalog_qualified_table", "SELECT * FROM memory.main.ecommerce_sales"),
+    ("qualified_in_subquery",
+     "SELECT * FROM ecommerce_sales WHERE region IN (SELECT region FROM main.ecommerce_sales)"),
+    ("qualified_in_cte",
+     "WITH r AS (SELECT * FROM main.ecommerce_sales) SELECT COUNT(*) FROM r"),
+    ("qualified_in_join",
+     "SELECT a.* FROM ecommerce_sales a JOIN main.ecommerce_sales b ON a.product = b.product"),
     ("empty_string", ""),
     ("whitespace_only", "   \n\t  "),
     ("garbage", "not even sql at all !!! ???"),

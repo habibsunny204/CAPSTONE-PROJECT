@@ -14,11 +14,23 @@ Two layers of defense, both required:
      sqlglot can't parse and falls back to a generic "Command" node for (e.g. `LOAD`
      in this sqlglot version).
   2. Every table reference anywhere in the query (including inside subqueries) must
-     resolve to exactly the one loaded table or a CTE defined within the query
-     itself. This is also an allowlist, not a blocklist of dangerous function names
-     (`read_csv`, `read_parquet`, `pragma_table_info`, ...) -- DuckDB can add new
-     table functions in a future version, and a blocklist would need updating for
-     each one; an allowlist of "the one table we loaded" doesn't.
+     be an *unqualified* name matching exactly the one loaded table, or a CTE defined
+     within the query itself. This is also an allowlist, not a blocklist of dangerous
+     function names (`read_csv`, `read_parquet`, `pragma_table_info`, ...) -- DuckDB
+     can add new table functions in a future version, and a blocklist would need
+     updating for each one; an allowlist of "the one table we loaded" doesn't.
+
+     Schema- and catalog-qualified references (`main.sales`, `memory.main.sales`,
+     `information_schema.tables`) are rejected outright rather than matched on their
+     final identifier. Two reasons, and the second is the load-bearing one:
+       - Matching only the last identifier meant `information_schema.tables` passed
+         whenever the loaded table happened to be called `tables`, and any qualified
+         path ending in the right word slipped through.
+       - The dashboard scopes this connection to the sidebar filters by pointing
+         `search_path` at a filtered view named identically to the base table (see
+         backend/scope.py). A bare name therefore resolves to the *scoped* view, while
+         `main.<table>` would reach around it to the full unfiltered table. Requiring
+         bare names is what makes the filter scope hold for model-generated SQL.
 """
 
 from __future__ import annotations
@@ -67,6 +79,14 @@ def validate_sql(sql: str, table_name: str, dialect: str = "duckdb") -> exp.Expr
         if isinstance(node, exp.Command):
             raise SandboxViolation(f"Disallowed/unrecognized statement fragment: {node.sql()!r}")
         if isinstance(node, exp.Table):
+            # Checked before the name, because node.name is only the *final* identifier:
+            # without this, "main.sales" and "information_schema.tables" are compared as
+            # "sales" and "tables" and can match by accident.
+            if node.db or node.catalog:
+                raise SandboxViolation(
+                    f"Query references a schema- or catalog-qualified table: {node.sql()!r}. "
+                    "Use the bare table name."
+                )
             ref_name = (node.name or "").lower()
             if ref_name not in allowed_tables:
                 raise SandboxViolation(f"Query references a disallowed table or function: {node.sql()!r}")
@@ -85,6 +105,11 @@ def execute_safe(con: duckdb.DuckDBPyConnection, sql: str, table_name: str) -> p
     that structurally, so validate_sql()'s allowlists -- which reject every DDL/DML/
     multi-statement/file-read path -- are what actually make this "read-only" in
     effect.
+
+    What rows `table_name` resolves to is the caller's choice: passing a cursor from
+    backend/scope.scoped_cursor() runs the same validated SQL against the sidebar's
+    filtered view instead of the full table, with no change to the SQL or to this
+    module. That indirection only holds because qualified names are rejected above.
     """
     validated = validate_sql(sql, table_name)
     return con.execute(validated.sql(dialect="duckdb")).df()
