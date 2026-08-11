@@ -195,6 +195,17 @@ charts:
       - "#008300"
       - "#4a3aa7"
       - "#e34948"
+    # A dedicated semantic colour for flagged anomalies (Task D3's chart overlay),
+    # kept separate from categorical_colors above: that palette is validated for
+    # *adjacent-pair* contrast in charts that cycle through it, which says nothing
+    # about whether this specific red reads as "alert" against the base colour used
+    # for normal points. It happens to equal categorical_colors[7].
+    alert_color: "#e34948"
+
+  # Task D3's anomaly overlay chart picks its y-axis column at runtime (whichever
+  # column the user is examining), so only the x-axis is fixed here.
+  anomaly_scatter:
+    x_column: "transaction_date"
 
   curated_bindings:
     time_series:

@@ -517,6 +517,78 @@ CURATED_BUILDERS = {
 }
 
 
+def anomaly_scatter(
+    all_rows: pd.DataFrame,
+    flagged: pd.DataFrame,
+    bounds: dict[str, float],
+    column: str,
+    config: dict[str, Any],
+    sample_size: int = 5000,
+) -> go.Figure:
+    """Overlay the rows Task D3 flagged against everything else, with the IQR fences
+    drawn in.
+
+    Answers "highlight anomalies in the dashboard" (Task D3), which the flagged-rows
+    table alone did not: a table lists what was flagged, this shows where those points
+    sit relative to the fence and the bulk of normal values, in one picture.
+
+    `all_rows` is the background -- sampled (fixed seed) the same way
+    scatter_regression samples, since this dataset scale would otherwise overplot into
+    a solid mass and slow the browser for no benefit. `flagged` (from
+    AnomalyReport.to_frame()) is the small, already-curated set the whole chart exists
+    to point at, so it is never sampled -- dropping even one flagged row here would
+    make the chart disagree with the table sitting next to it.
+
+    x-axis comes from config (`charts.anomaly_scatter.x_column`) rather than being
+    guessed, so the same axis is used every time regardless of which column the user
+    is currently examining -- `column` itself is chosen at runtime via the UI's
+    selectbox, which is why (unlike the other curated charts) it is a parameter here
+    rather than a config binding.
+    """
+    x_column = config["charts"]["anomaly_scatter"]["x_column"]
+    alert_color = config["charts"]["theme"]["alert_color"]
+    base_color = _colors(config)[0]
+
+    background = all_rows[[x_column, column]].dropna()
+    if len(background) > sample_size:
+        background = background.sample(sample_size, random_state=0)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scattergl(
+        x=background[x_column], y=background[column], mode="markers",
+        name="Normal",
+        marker=dict(color=base_color, size=5, opacity=0.35),
+        hovertemplate=f"{_prettify(column)}: %{{y:,.2f}}<extra></extra>",
+    ))
+
+    if not flagged.empty:
+        # Marker area scales with severity so the most extreme points read as more
+        # prominent, not just differently coloured; capped so one huge outlier can't
+        # swallow the plot.
+        sizes = 8 + (flagged["_severity_iqrs"].clip(upper=10) * 2.5)
+        symbols = flagged["_direction"].map({"above": "triangle-up", "below": "triangle-down"})
+        fig.add_trace(go.Scatter(
+            x=flagged[x_column], y=flagged[column], mode="markers", name="Flagged",
+            marker=dict(color=alert_color, size=sizes, symbol=symbols,
+                       line=dict(color="white", width=1)),
+            customdata=flagged["_severity_iqrs"],
+            hovertemplate=(
+                f"{_prettify(column)}: %{{y:,.2f}}<br>"
+                "%{customdata:.1f} IQRs past the fence<extra></extra>"
+            ),
+        ))
+
+    for bound_name, bound_value in (("lower", bounds.get("lower")), ("upper", bounds.get("upper"))):
+        if bound_value is not None:
+            fig.add_hline(
+                y=bound_value, line=dict(color="#666666", width=1, dash="dash"),
+                annotation_text=f"{bound_name.title()} fence", annotation_position="right",
+            )
+
+    title = f"{_prettify(column)} Anomalies Over Time"
+    return apply_theme(fig, config, title, x_title=_prettify(x_column), y_title=_prettify(column))
+
+
 def curated_charts(config: dict[str, Any]) -> dict[str, Any]:
     """Display title -> builder function, for every configured curated chart.
 

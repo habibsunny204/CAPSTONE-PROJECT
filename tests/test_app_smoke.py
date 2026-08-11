@@ -424,3 +424,41 @@ def test_caption_failure_falls_back_instead_of_losing_the_answer(monkeypatch):
     # The answer survives intact, and the caption degrades to the deterministic reason.
     assert any("Some products cost more than 500." in m.value for m in at.markdown)
     assert any("shown as a bar chart" in c.value for c in at.caption)
+
+
+# ---------------------------------------------------------------------------
+# Anomaly overlay chart (Task D3)
+# ---------------------------------------------------------------------------
+
+
+def test_anomaly_overlay_chart_renders_from_a_seeded_report():
+    """D3 requires anomalies to be highlighted in the dashboard, not just listed in a
+    table. Seed a report the way a real 'Detect' click would produce one and confirm
+    the overlay chart renders alongside the table, with no crash or error box.
+    """
+    from features.anomaly_detection import Anomaly, AnomalyReport
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    at.session_state["anomaly_report"] = AnomalyReport(
+        column="price",
+        bounds={"lower": 5.0, "upper": 500.0, "q1": 50.0, "q3": 300.0},
+        n_total_outliers=2,
+        anomalies=[
+            Anomaly(values={"transaction_date": "2022-03-01", "price": 612.23},
+                    value=612.23, direction="above", severity=2.1),
+            Anomaly(values={"transaction_date": "2022-05-01", "price": 1.0},
+                    value=1.0, direction="below", severity=0.8),
+        ],
+        narrative="Two transactions sit outside the normal price range.",
+        provider="gemini",
+    )
+    at.run()
+
+    assert not at.exception, [str(e) for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+    assert any("Two transactions sit outside" in m.value for m in at.markdown)
+    # AppTest exposes no accessor for st.plotly_chart, so the chart's own caption --
+    # emitted only after charts.anomaly_scatter() returns without raising -- is the
+    # available proxy for "the overlay actually built and rendered".
+    assert any("Triangles mark the flagged rows" in c.value for c in at.caption)
+    assert any(s.value == "Flagged rows" for s in at.subheader)

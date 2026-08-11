@@ -483,3 +483,105 @@ def test_confidence_band_covers_the_true_mean_response_at_the_nominal_rate():
         inside += lower[0] <= (3.0 * 7.0 + 2.0) <= upper[0]
 
     assert 0.88 <= inside / trials <= 0.99, f"coverage {inside / trials:.1%}, expected ~95%"
+
+
+# ---------------------------------------------------------------------------
+# D3 -- anomaly overlay chart
+# ---------------------------------------------------------------------------
+
+
+def _fake_flagged(mini_df, column, x_column, n=3):
+    """A synthetic AnomalyReport.to_frame()-shaped DataFrame: n rows pulled from the
+    fixture, tagged the way detect_anomalies() tags real flagged rows.
+    """
+    rows = mini_df[[x_column, column]].dropna().head(n).copy()
+    rows["_direction"] = ["above", "below", "above"][:n]
+    rows["_severity_iqrs"] = [3.5, 1.2, 8.0][:n]
+    return rows.reset_index(drop=True)
+
+
+def test_anomaly_scatter_shows_exactly_the_flagged_rows(mini_df, dataset_config):
+    """The whole point of the chart: the 'Flagged' layer must be the flagged rows,
+    not a resample or a subset of them -- dropping even one would make the chart
+    disagree with the table rendered beside it.
+    """
+    column = "total_revenue"
+    x_column = dataset_config["charts"]["anomaly_scatter"]["x_column"]
+    flagged = _fake_flagged(mini_df, column, x_column, n=3)
+
+    fig = charts.anomaly_scatter(mini_df, flagged, {"lower": 0, "upper": 1e9}, column, dataset_config)
+
+    named = {t.name: t for t in fig.data}
+    assert "Normal" in named and "Flagged" in named
+    assert len(named["Flagged"].x) == 3
+
+
+def test_anomaly_scatter_draws_both_fences(mini_df, dataset_config):
+    """A table alone doesn't show *why* a row was flagged; the fence lines are what
+    let a reader see a point sitting outside the normal range.
+    """
+    column = "total_revenue"
+    x_column = dataset_config["charts"]["anomaly_scatter"]["x_column"]
+    flagged = _fake_flagged(mini_df, column, x_column, n=1)
+    bounds = {"lower": 10.0, "upper": 900.0, "q1": 100.0, "q3": 500.0}
+
+    fig = charts.anomaly_scatter(mini_df, flagged, bounds, column, dataset_config)
+
+    fence_ys = sorted(shape.y0 for shape in fig.layout.shapes)
+    assert fence_ys == [10.0, 900.0]
+
+
+def test_anomaly_scatter_symbol_reflects_direction(mini_df, dataset_config):
+    """Above-the-fence and below-the-fence anomalies are visually distinguishable,
+    not just both drawn as generic red dots.
+    """
+    column = "total_revenue"
+    x_column = dataset_config["charts"]["anomaly_scatter"]["x_column"]
+    flagged = _fake_flagged(mini_df, column, x_column, n=2)  # ["above", "below"]
+
+    fig = charts.anomaly_scatter(mini_df, flagged, {"lower": 0, "upper": 1e9}, column, dataset_config)
+
+    symbols = list(next(t for t in fig.data if t.name == "Flagged").marker.symbol)
+    assert symbols == ["triangle-up", "triangle-down"]
+
+
+def test_anomaly_scatter_never_samples_the_flagged_layer(mini_df, dataset_config):
+    """Background sampling exists to keep the plot legible at full dataset scale, but
+    it must never touch the flagged rows -- those are already a small, curated set,
+    and sampling them would make the chart show fewer anomalies than were detected.
+    """
+    column = "total_revenue"
+    x_column = dataset_config["charts"]["anomaly_scatter"]["x_column"]
+    flagged = _fake_flagged(mini_df, column, x_column, n=3)
+
+    fig = charts.anomaly_scatter(
+        mini_df, flagged, {"lower": 0, "upper": 1e9}, column, dataset_config, sample_size=1,
+    )
+
+    assert len(next(t for t in fig.data if t.name == "Flagged").x) == 3
+
+
+def test_anomaly_scatter_marker_size_scales_with_severity(mini_df, dataset_config):
+    """Severity is the number that makes one flagged row worse than another; if it
+    never reached the chart, every flagged point would look equally alarming.
+    """
+    column = "total_revenue"
+    x_column = dataset_config["charts"]["anomaly_scatter"]["x_column"]
+    flagged = _fake_flagged(mini_df, column, x_column, n=3)  # severities 3.5, 1.2, 8.0
+
+    fig = charts.anomaly_scatter(mini_df, flagged, {"lower": 0, "upper": 1e9}, column, dataset_config)
+
+    sizes = list(next(t for t in fig.data if t.name == "Flagged").marker.size)
+    assert sizes[2] > sizes[0] > sizes[1], "size ordering should track 8.0 > 3.5 > 1.2"
+
+
+def test_anomaly_scatter_handles_no_flagged_rows(mini_df, dataset_config):
+    """A column with no current outliers (e.g. after narrowing the sidebar filters)
+    must still render the background and fences without crashing.
+    """
+    fig = charts.anomaly_scatter(
+        mini_df, pd.DataFrame(), {"lower": 0, "upper": 1e9}, "total_revenue", dataset_config,
+    )
+    names = [t.name for t in fig.data]
+    assert "Normal" in names and "Flagged" not in names
+    assert len(fig.layout.shapes) == 2

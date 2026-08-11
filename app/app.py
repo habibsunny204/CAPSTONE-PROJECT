@@ -756,6 +756,17 @@ def _render_anomaly_detection(llm_con, table_name: str, config: dict[str, Any],
 
     frame = report.to_frame()
     if not frame.empty:
+        x_column = config["charts"]["anomaly_scatter"]["x_column"]
+        if x_column in filtered.columns and x_column in frame.columns:
+            st.plotly_chart(
+                charts.anomaly_scatter(filtered, frame, report.bounds, report.column, config),
+                width='stretch',
+            )
+            st.caption(
+                "Triangles mark the flagged rows -- pointing up for above the fence, "
+                "down for below -- sized by how many IQRs past it they sit. Dashed "
+                "lines mark the fences themselves."
+            )
         st.subheader("Flagged rows")
         st.caption("`_severity_iqrs` is how many IQRs past the fence each row sits.")
         st.dataframe(frame, width='stretch')
