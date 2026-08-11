@@ -357,3 +357,129 @@ def test_animated_bar_frame_values_match_the_underlying_totals(mini_df, dataset_
                 .groupby(dimension)[metric].sum())
     for category, value in zip(frame.data[0].x, frame.data[0].y):
         assert value == pytest.approx(expected.get(category, 0.0))
+
+
+# ---------------------------------------------------------------------------
+# C2 -- regression confidence interval
+# ---------------------------------------------------------------------------
+
+
+def test_scatter_regression_draws_a_confidence_band(mini_df, dataset_config):
+    """C2 asks for "regression line AND confidence interval" -- the chart had only
+    the line. Assert a filled band trace exists alongside the trend.
+    """
+    fig = charts.scatter_regression(mini_df, dataset_config)
+
+    filled = [t for t in fig.data if getattr(t, "fill", None) == "tonexty"]
+    assert len(filled) == 1, "expected exactly one filled confidence band"
+    assert "confidence" in filled[0].name.lower()
+    assert any(t.name == "Trend" for t in fig.data)
+
+
+def test_confidence_band_encloses_the_fitted_line(mini_df, dataset_config):
+    """A band that doesn't contain its own line is drawn wrong (usually the two
+    'tonexty' edges in the wrong order, which fills against the scatter instead).
+    """
+    import numpy as np
+
+    fig = charts.scatter_regression(mini_df, dataset_config)
+    upper = np.array(fig.data[1].y, dtype=float)
+    lower = np.array(fig.data[2].y, dtype=float)
+    trend = np.array(fig.data[3].y, dtype=float)
+
+    assert np.all(lower <= trend + 1e-9)
+    assert np.all(trend <= upper + 1e-9)
+
+
+def test_confidence_band_is_narrowest_at_the_mean_of_x(mini_df, dataset_config):
+    """The (x0 - xbar)^2 term is the whole character of a regression CI: the band
+    pivots about the centroid, so it is tightest at the mean of x and flares towards
+    both extremes. A band of constant width means that term was dropped.
+
+    The narrowest point is located at xbar, NOT at the middle of the plotted range --
+    the fixture's x is skewed (mean sits ~6% along min..max), so testing the midpoint
+    would assert something false about correct code.
+    """
+    import numpy as np
+
+    binding = dataset_config["charts"]["curated_bindings"]["scatter_regression"]
+    # Dropped pairwise, exactly as the builder does. The fixture is deliberately
+    # dirty and carries a null in the y column, so dropping on x alone gives a
+    # different mean than the one the fit actually used.
+    x = mini_df[[binding["x"], binding["y"]]].dropna()[binding["x"]].to_numpy(dtype=float)
+
+    fig = charts.scatter_regression(mini_df, dataset_config)
+    grid = np.array(fig.data[1].x, dtype=float)
+    width = np.array(fig.data[1].y, dtype=float) - np.array(fig.data[2].y, dtype=float)
+
+    assert np.all(width >= 0)
+    assert width.argmin() == np.abs(grid - x.mean()).argmin()
+    # Strictly widening as it moves away from the mean, in both directions.
+    at_mean = width.argmin()
+    assert np.all(np.diff(width[at_mean:]) > 0)
+    assert np.all(np.diff(width[:at_mean + 1]) < 0)
+
+
+def test_confidence_band_half_width_matches_the_closed_form():
+    """Pin the arithmetic against the analytic value rather than the implementation.
+
+    At x = xbar the standard error of the fit collapses to s/sqrt(n), so the half
+    width there must be exactly 1.96 * s / sqrt(n). This is the assertion that would
+    catch a wrong degrees-of-freedom term (n instead of n-2) or a dropped 1/n.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    x = rng.uniform(0, 10, 200)
+    y = 3.0 * x + 2.0 + rng.normal(0, 1.5, 200)
+    slope, intercept = np.polyfit(x, y, 1)
+
+    lower, upper = charts._regression_confidence_band(
+        x, y, np.array([x.mean()]), slope, intercept
+    )
+
+    residuals = y - (slope * x + intercept)
+    s = np.sqrt((residuals ** 2).sum() / (len(x) - 2))
+    assert (upper[0] - lower[0]) / 2 == pytest.approx(1.96 * s / np.sqrt(len(x)))
+
+
+def test_confidence_band_degenerate_inputs_collapse_to_the_line():
+    """Two points, or every x identical, makes Sxx zero and the standard error
+    undefined. Return a zero-width band rather than dividing by zero and blanking the
+    chart with a NaN ribbon.
+    """
+    import numpy as np
+
+    for x, y, slope, intercept in (
+        (np.array([1.0, 2.0]), np.array([1.0, 2.0]), 1.0, 0.0),
+        (np.array([5.0, 5.0, 5.0]), np.array([1.0, 2.0, 3.0]), 0.0, 2.0),
+    ):
+        lower, upper = charts._regression_confidence_band(
+            x, y, np.array([x.mean()]), slope, intercept
+        )
+        assert np.all(np.isfinite(lower)) and np.all(np.isfinite(upper))
+        assert lower == pytest.approx(upper)
+
+
+def test_confidence_band_covers_the_true_mean_response_at_the_nominal_rate():
+    """The property that makes it a 95% interval at all: across repeated samples from
+    a known model, the band should contain the true mean response about 95% of the
+    time. Loose bounds -- this catches a band that is wildly mis-scaled (a missing
+    1.96, or a standard deviation used where a standard error belongs), not sampling
+    noise.
+    """
+    import numpy as np
+
+    inside = 0
+    trials = 300
+    for seed in range(trials):
+        rng = np.random.default_rng(seed)
+        x = rng.uniform(0, 10, 120)
+        y = 3.0 * x + 2.0 + rng.normal(0, 1.5, 120)
+        slope, intercept = np.polyfit(x, y, 1)
+        lower, upper = charts._regression_confidence_band(
+            x, y, np.array([7.0]), slope, intercept
+        )
+        inside += lower[0] <= (3.0 * 7.0 + 2.0) <= upper[0]
+
+    assert 0.88 <= inside / trials <= 0.99, f"coverage {inside / trials:.1%}, expected ~95%"

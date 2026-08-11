@@ -368,19 +368,34 @@ def sunburst(df: pd.DataFrame, config: dict[str, Any]) -> go.Figure:
 
 
 def scatter_regression(df: pd.DataFrame, config: dict[str, Any], sample_size: int = 5000) -> go.Figure:
-    """Scatter of two numeric measures with a least-squares regression line.
+    """Scatter of two numeric measures with a least-squares regression line and a 95%
+    confidence band (C2's "scatter plot with regression line and confidence interval").
 
     Large results are randomly sampled (fixed seed) before plotting -- 50k+ markers
     render slowly and overplot into a solid mass, so the sample is more readable as
-    well as faster. The regression line is fit on the full data, not the sample, so
-    the trend shown is the real one.
+    well as faster. The regression line and the band are computed on the full data,
+    not the sample, so the trend shown is the real one.
+
+    **What the band is, precisely** -- worth being able to state in Q&A, because at
+    this sample size it draws as a very thin ribbon and "why is your CI invisible?" is
+    a fair question. It is a confidence interval on the *mean* response: the range in
+    which the fitted line itself plausibly sits, at +/-1.96 standard errors of the
+    fit. It is NOT a prediction interval, which would describe where individual points
+    fall and would be far wider (it would include the residual scatter, which here is
+    enormous). The band narrows as n grows -- with 500k rows the position of the line
+    is pinned down very precisely even though individual points are not.
+
+    Uses the normal critical value 1.96 rather than a t distribution: they differ by
+    under 0.1% past a few hundred degrees of freedom, far below a pixel here, and
+    reaching for scipy to get a t-value would add a dependency for nothing.
     """
     binding = _bindings(config, "scatter_regression")
     x_col, y_col = binding["x"], binding["y"]
     colors = _colors(config)
 
     clean = df[[x_col, y_col]].dropna()
-    slope, intercept = np.polyfit(clean[x_col], clean[y_col], 1)
+    x, y = clean[x_col].to_numpy(dtype=float), clean[y_col].to_numpy(dtype=float)
+    slope, intercept = np.polyfit(x, y, 1)
 
     plotted = clean.sample(sample_size, random_state=0) if len(clean) > sample_size else clean
 
@@ -392,15 +407,70 @@ def scatter_regression(df: pd.DataFrame, config: dict[str, Any], sample_size: in
         hovertemplate=f"{_prettify(x_col)}: %{{x}}<br>{_prettify(y_col)}: %{{y:,.2f}}<extra></extra>",
     ))
 
-    line_x = np.linspace(clean[x_col].min(), clean[x_col].max(), 100)
+    line_x = np.linspace(x.min(), x.max(), 100)
+    line_y = slope * line_x + intercept
+    lower, upper = _regression_confidence_band(x, y, line_x, slope, intercept)
+
+    # Upper edge first, then the lower edge filling back to it: Plotly's "tonexty"
+    # fills against the *previous* trace, so the order is load-bearing. Both edges are
+    # hoverinfo="skip" so the band never steals the tooltip from the points.
     fig.add_trace(go.Scatter(
-        x=line_x, y=slope * line_x + intercept, mode="lines", name="Trend",
+        x=line_x, y=upper, mode="lines", line=dict(width=0),
+        hoverinfo="skip", showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=line_x, y=lower, mode="lines", line=dict(width=0),
+        fill="tonexty", fillcolor=_translucent(colors[1], 0.25),
+        name="95% confidence interval", hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=line_x, y=line_y, mode="lines", name="Trend",
         line=dict(color=colors[1], width=2),
         hovertemplate=f"Trend: %{{y:,.2f}}<extra></extra>",
     ))
 
-    subtitle = f"{binding['title']} (trend: {slope:,.1f} per unit)"
+    subtitle = f"{binding['title']} (trend: {slope:,.1f} per unit, 95% CI shaded)"
     return apply_theme(fig, config, subtitle, x_title=_prettify(x_col), y_title=_prettify(y_col))
+
+
+def _translucent(hex_color: str, alpha: float) -> str:
+    """A #rrggbb colour as an rgba() string, so a fill can reuse a palette entry at
+    partial opacity without introducing a second, unvalidated colour.
+    """
+    raw = hex_color.lstrip("#")
+    r, g, b = (int(raw[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def _regression_confidence_band(
+    x: np.ndarray, y: np.ndarray, line_x: np.ndarray, slope: float, intercept: float,
+    z: float = 1.96,
+) -> tuple[np.ndarray, np.ndarray]:
+    """95% confidence band for the fitted line, evaluated at `line_x`.
+
+    Standard textbook form: the standard error of the fitted mean at a point x0 is
+    s * sqrt(1/n + (x0 - xbar)^2 / Sxx), where s is the residual standard error with
+    n-2 degrees of freedom. That (x0 - xbar)^2 term is why the band is narrowest at
+    the mean of x and flares towards the extremes -- the slope's uncertainty pivots
+    the line about its centroid.
+
+    Degenerate inputs (fewer than 3 points, or every x identical, which makes Sxx
+    zero and the slope undefined) return the line itself as both edges: a zero-width
+    band, rather than a divide-by-zero or a NaN ribbon that would blank the chart.
+    """
+    n = len(x)
+    x_mean = x.mean()
+    sxx = float(((x - x_mean) ** 2).sum())
+    if n < 3 or sxx == 0:
+        fitted = slope * line_x + intercept
+        return fitted, fitted
+
+    residuals = y - (slope * x + intercept)
+    s = np.sqrt(float((residuals ** 2).sum()) / (n - 2))
+    se_fit = s * np.sqrt(1.0 / n + (line_x - x_mean) ** 2 / sxx)
+
+    fitted = slope * line_x + intercept
+    return fitted - z * se_fit, fitted + z * se_fit
 
 
 def stacked_bar(df: pd.DataFrame, config: dict[str, Any], drill_into: str | None = None) -> go.Figure:
