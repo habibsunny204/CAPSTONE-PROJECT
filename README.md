@@ -143,11 +143,17 @@ python -m backend.benchmark_perf  # query performance against the <500 ms bar
 
 Both write timestamped evidence to `eval/results/`. The most recent runs:
 
-- **Accuracy**: 15/15 (100%) on the fixed benchmark set, spanning simple aggregation,
-  filtered aggregation, synonym resolution, multi-condition filters, and out-of-scope
-  questions that must be declined rather than hallucinated.
-- **Performance**: filtered aggregation on all 500,000 rows runs in **7.1–13.5 ms median**
-  across three scenarios — roughly 37–70× under the 500 ms requirement.
+- **Accuracy**: the only logged run (`eval/results/benchmark_20260810_233113.json`,
+  15/15) predates the Global Superstore → Global E-Commerce Sales migration and was
+  scored against `ecommerce_sales`'s predecessor table (its SQL literally reads
+  `FROM superstore`). The current 15-question set in `eval/benchmark_questions.json`
+  has not yet been run live — both providers' free-tier daily quotas were exhausted
+  during the migration session (see `PROGRESS.md`). Re-run
+  `python -m eval.run_benchmark` on a day with fresh quota before citing an accuracy
+  number for the current dataset.
+- **Performance**: filtered aggregation on all 500,000 rows runs in **8.9–17.3 ms
+  median** across three scenarios (`eval/results/perf_benchmark_20260811_210226.json`)
+  — roughly 29–56× under the 500 ms requirement.
 
 ## Layout
 
