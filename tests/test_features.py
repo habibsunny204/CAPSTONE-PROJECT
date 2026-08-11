@@ -13,6 +13,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
+from backend import scope
 from features import anomaly_detection, comparative_analysis
 from llm import client
 
@@ -271,3 +272,49 @@ def test_anomaly_prompt_rounds_figures(mini_con_clean, dataset_config, monkeypat
         for value in row["values"].values():
             if isinstance(value, float):
                 assert round(value, 2) == value
+
+
+# ---------------------------------------------------------------------------
+# Both features under a sidebar filter scope
+# ---------------------------------------------------------------------------
+
+
+def test_anomaly_detection_uses_scoped_fences(mini_con_clean, dataset_config):
+    """D1 through a scoped connection: the IQR fences are recomputed from the rows in
+    scope, not inherited from the whole table.
+
+    The fixture's 5000 outlier is an Asia row, so scoping to Europe must move the
+    fences off it entirely -- proving the bounds came from the scope rather than the
+    base table.
+    """
+    scoped = scope.scoped_cursor(
+        mini_con_clean, TABLE_NAME, "features_scope_eu",
+        [{"column": "region", "op": "in", "value": ["Europe"]}],
+    )
+    report = anomaly_detection.detect_anomalies(
+        scoped, TABLE_NAME, dataset_config, column="total_revenue",
+        context_columns=["transaction_date"],
+    )
+    assert 5000 not in [a.value for a in report.anomalies]
+
+    unscoped = anomaly_detection.detect_anomalies(
+        mini_con_clean, TABLE_NAME, dataset_config, column="total_revenue",
+        context_columns=["transaction_date"],
+    )
+    assert 5000 in [a.value for a in unscoped.anomalies]
+    assert report.bounds != unscoped.bounds
+
+
+def test_comparative_analysis_totals_respect_the_scope(mini_con_clean, dataset_config):
+    """D2 through a scoped connection: a side's total counts only rows in scope."""
+    scoped = scope.scoped_cursor(
+        mini_con_clean, TABLE_NAME, "features_scope_books",
+        [{"column": "category", "op": "in", "value": ["Books"]}],
+    )
+    result = comparative_analysis.compare_dimension_values(
+        scoped, TABLE_NAME, dimension="region",
+        left_value="Asia", right_value="Europe", metrics=["total_revenue"],
+    )
+    # Asia's Books rows are 800 + 84; Europe's two Books rows both have a null revenue.
+    assert result.left.totals["total_revenue"] == pytest.approx(884)
+    assert result.right.totals["total_revenue"] == 0

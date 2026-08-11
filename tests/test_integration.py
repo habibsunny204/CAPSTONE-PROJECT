@@ -12,6 +12,7 @@ import json
 import pandas as pd
 import pytest
 
+from backend import scope
 from llm import client, pipeline
 from llm.memory import MAX_TURNS, ConversationMemory
 
@@ -207,3 +208,63 @@ def test_conversation_memory_get_history_is_a_copy():
     history = memory.get_history()
     history.append({"question": "injected", "sql": "", "answer": ""})
     assert len(memory.get_history()) == 1
+
+
+# ---------------------------------------------------------------------------
+# The pipeline under a sidebar filter scope
+# ---------------------------------------------------------------------------
+
+
+def test_answer_question_runs_against_the_scoped_view(mini_con_clean, dataset_config, monkeypatch):
+    """The reported bug at pipeline level.
+
+    The model emits ordinary unqualified SQL over the base table name; when the
+    connection is scoped, that same SQL must total only the rows in scope. Nothing
+    about the generated SQL changes -- only what the table name resolves to.
+    """
+    monkeypatch.setattr(pipeline.client, "generate", _fake_generate(
+        json.dumps({"sql": f"SELECT SUM(total_revenue) AS t FROM {TABLE_NAME}",
+                    "reasoning": "sum revenue"}),
+        "Revenue totals are summarized above.",
+    ))
+
+    scoped = scope.scoped_cursor(
+        mini_con_clean, TABLE_NAME, "pipeline_scope",
+        [{"column": "region", "op": "in", "value": ["Asia"]}],
+    )
+    result = pipeline.answer_question(
+        scoped, TABLE_NAME, dataset_config, "What is total revenue?",
+        scope_description="Region is one of [Asia]",
+    )
+
+    # Asia's rows total 7594; the whole fixture totals 9103.
+    assert result.result.iloc[0, 0] == pytest.approx(7594)
+    assert result.retried is False
+
+
+def test_scope_description_reaches_the_prompt_only_when_filtered(mini_con_clean, dataset_config,
+                                                                monkeypatch):
+    """With no filters the prompt must be byte-identical to the unscoped one -- that
+    is what keeps the benchmark and ablation numbers comparable across this change.
+    """
+    captured = []
+
+    def capture(system_prompt, user_prompt, json_mode=False, timeout_s=30.0):
+        captured.append(system_prompt)
+        return client.LLMResult(
+            text=json.dumps({"sql": f"SELECT COUNT(*) AS n FROM {TABLE_NAME}", "reasoning": "count"}),
+            provider="gemini", elapsed_ms=1.0,
+        )
+
+    monkeypatch.setattr(pipeline.client, "generate", capture)
+
+    pipeline.answer_question_sql_only(mini_con_clean, TABLE_NAME, dataset_config, "how many rows?")
+    pipeline.answer_question_sql_only(
+        mini_con_clean, TABLE_NAME, dataset_config, "how many rows?",
+        scope_description="Region is one of [Asia]",
+    )
+
+    unscoped_prompt, scoped_prompt = captured
+    assert "dashboard filters" not in unscoped_prompt
+    assert "Region is one of [Asia]" in scoped_prompt
+    assert "Do not add these conditions" in scoped_prompt

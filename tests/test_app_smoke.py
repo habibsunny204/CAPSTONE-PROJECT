@@ -83,6 +83,72 @@ def test_filters_actually_narrow_the_data(app):
     assert after != before
 
 
+def test_filters_scope_the_sql_path_not_just_the_charts(app):
+    """The reported bug, as a regression test.
+
+    With a filter applied, the sidebar showed a reduced row count while the AI
+    Assistant and Task D kept answering from all 500,000 rows: the filters produced a
+    pandas DataFrame that only the chart tabs consumed, and every DuckDB path queried
+    the base table.
+
+    The probe is the anomaly picker's outlier count. That number comes from
+    quality.profile_report() executed through the same scoped cursor the AI Assistant
+    uses, so it is genuine SQL against the scope -- if it moves when the sidebar
+    moves, the SQL path is scoped. (backend/scope.py's own tests prove the scope
+    matches the pandas rendering row-for-row; this proves the app is wired to it.)
+    """
+    def outlier_label():
+        return app.selectbox(key="anomaly_column").options[0]
+
+    app.sidebar.multiselect(key="filter_region").set_value([]).run()
+    unfiltered = outlier_label()
+
+    app.sidebar.multiselect(key="filter_region").select("Asia").run()
+    assert not app.exception, [str(e) for e in app.exception]
+    filtered = outlier_label()
+
+    assert filtered != unfiltered, (
+        f"outlier count unchanged under a filter ({unfiltered!r}) -- the SQL path is "
+        "still reading the unfiltered table"
+    )
+    assert int(app.sidebar.metric[0].value.replace(",", "")) < 500_000
+
+
+def test_task_d_option_lists_respect_the_filters(app):
+    """Comparative analysis must not offer dimension values the sidebar excluded --
+    otherwise a user filtered to one region can pick a comparison whose other side is
+    necessarily empty.
+    """
+    app.sidebar.multiselect(key="filter_region").set_value([]).run()
+    assert len(app.selectbox(key="comparison_left").options) > 1
+
+    app.sidebar.multiselect(key="filter_region").select("Asia").run()
+    assert app.selectbox(key="comparison_left").options == ["Asia"]
+
+
+def test_scope_notice_appears_only_when_filtered(app):
+    """An answer must never be read without its scope visible -- but an unfiltered
+    dashboard shouldn't nag about filters that aren't applied.
+    """
+    app.sidebar.multiselect(key="filter_region").set_value([]).run()
+    assert not any("Filtered view" in i.value for i in app.info)
+
+    app.sidebar.multiselect(key="filter_region").select("Europe").run()
+    assert any("Filtered view" in i.value for i in app.info)
+
+
+def test_data_quality_panel_stays_dataset_wide(app):
+    """The one deliberate exception: the quality profile documents what ingestion
+    (Task A3) did to the source data, which is a property of the dataset rather than
+    of a slice. It must not follow the filters even when everything else does.
+    """
+    app.sidebar.multiselect(key="filter_region").select("Asia").run()
+
+    profiled = next(m for m in app.metric if m.label == "Rows profiled")
+    assert profiled.value == "500,000"
+    assert int(app.sidebar.metric[0].value.replace(",", "")) < 500_000
+
+
 def test_ai_tab_has_chat_input_and_preset_buttons(app):
     """The AI Assistant tab's controls exist without any LLM call being made."""
     assert any(w.key == "chat_input" for w in app.chat_input)
