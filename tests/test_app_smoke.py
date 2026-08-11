@@ -199,3 +199,92 @@ def test_ask_a_question_end_to_end(app):
     rendered = [m.value for m in app.markdown]
     assert question in rendered, "the user's own message should appear in the transcript"
     assert any(s.label == "Chart type" for s in app.selectbox)
+
+
+# ---------------------------------------------------------------------------
+# Error containment
+# ---------------------------------------------------------------------------
+
+
+def _seeded_answer(result_df):
+    """A stored conversation turn, shaped the way _run_question stores one."""
+    return {
+        "kind": "question", "question": "list products with a price over 500",
+        "sql": "SELECT product, region, category, price FROM ecommerce_sales WHERE price > 500",
+        "reasoning": "filter on price", "result": result_df,
+        "narrative": "Some products cost more than 500.", "provider": "gemini",
+        "retried": False, "elapsed": 18.7,
+    }
+
+
+def test_metric_override_on_a_text_result_does_not_crash_the_page():
+    """The reported crash, reproduced through the real app.
+
+    With the chart-type override set to `metric` and a result whose first cell is a
+    string, the headline-metric view formatted it with f"{v:,.2f}" and raised
+    ValueError -- which Streamlit turns into a full-page traceback, wiping the tabs,
+    the sidebar and every earlier answer.
+    """
+    import pandas as pd
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    at.session_state["turns"] = [_seeded_answer(pd.DataFrame({
+        "product": ["Product_6551", "Product_3625"],
+        "region": ["Asia", "North America"],
+        "category": ["Sports & Outdoors", "Fashion"],
+        "price": [612.23, 612.66],
+    }))]
+    at.session_state["chart_type_0"] = "metric"
+    at.run()
+
+    assert not at.exception, [str(e) for e in at.exception]
+    # The answer still renders, and the page explains why it isn't a metric.
+    assert any("can't be shown as a" in i.value for i in at.info)
+    assert any("Some products cost more than 500." in m.value for m in at.markdown)
+
+
+@pytest.mark.parametrize("chart_type", ["line", "bar", "scatter", "table", "metric"])
+def test_no_chart_override_can_take_the_page_down(chart_type):
+    """Every option the dropdown offers must be survivable on an awkward result --
+    line/bar/scatter used to raise here too, for a different reason (no axes).
+    """
+    import pandas as pd
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    # The same shape as the reported crash: a mixed 3+-column listing. auto-select
+    # calls this a table and leaves x/y as None, which is exactly what made every
+    # non-table override raise inside Plotly.
+    at.session_state["turns"] = [_seeded_answer(pd.DataFrame({
+        "product": ["Product_6551", "Product_3625"],
+        "region": ["Asia", "North America"],
+        "category": ["Sports & Outdoors", "Fashion"],
+        "price": [612.23, 612.66],
+    }))]
+    at.session_state["chart_type_0"] = chart_type
+    at.run()
+
+    assert not at.exception, [str(e) for e in at.exception]
+    # Stricter than "the page survived": the per-turn guard would swallow a raise and
+    # still leave at.exception empty, so this would pass even with the override logic
+    # broken. Requiring no error box asserts the override actually produced something
+    # viewable -- a figure, or a clean "can't be shown as a ..." fallback.
+    assert not at.error, [e.value for e in at.error]
+
+
+def test_a_broken_answer_does_not_hide_the_rest_of_the_transcript():
+    """Turns are guarded individually: one answer that cannot be rendered reports
+    itself in place, and the conversation around it survives.
+    """
+    import pandas as pd
+
+    broken = _seeded_answer("not a dataframe at all")  # forces a render failure
+    ok = _seeded_answer(pd.DataFrame({"region": ["Asia"], "revenue": [1.0]}))
+    ok["narrative"] = "This answer is fine."
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    at.session_state["turns"] = [broken, ok]
+    at.run()
+
+    assert not at.exception, [str(e) for e in at.exception]
+    assert any("Something went wrong while rendering" in e.value for e in at.error)
+    assert any("This answer is fine." in m.value for m in at.markdown)

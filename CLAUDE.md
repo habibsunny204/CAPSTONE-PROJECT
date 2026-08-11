@@ -23,7 +23,7 @@ without flagging the deviation explicitly.
 ## Current repo state
 
 All tasks A1–D2 are **implemented and tested** — see `PROGRESS.md` for per-subtask status. The
-full suite passes (`pytest`, 217 tests + 1 opt-in `live_llm` test).
+full suite passes (`pytest`, 269 tests + 1 opt-in `live_llm` test).
 
 The project was originally built against Global Superstore and has since been **retargeted to
 Global E-Commerce Sales**. `PROJECT_SPEC.md` still describes the Superstore dataset in its prose
@@ -88,6 +88,24 @@ while the AI Assistant, the preset insights and both Task D features hold only
   documents A3 ingestion cleaning rather than a slice. Its caption says so, and a test pins it.
 - `tests/test_scope.py` asserts the pandas and SQL renderings select the same rows. If you touch
   either renderer, that test is the one that catches divergence.
+
+## Error handling in the UI
+
+Streamlit's default for an uncaught exception is to replace the entire page with a red
+traceback — every tab, chart and prior answer disappears. For a dashboard that is alarming and
+useless to the reader, and in a live demo it looks like the whole app fell over when one chart
+simply could not be drawn.
+
+- `guarded_section(label)` in `app.py` contains a failure to the section that caused it: an
+  inline `st.error` plus a collapsed "Technical details" expander, with the traceback logged.
+  Each tab, each stored answer, and both Task D actions are wrapped in it.
+- It is a **backstop, not a substitute for handling the actual case.** When a specific failure
+  is known — an override the data can't support, a non-numeric cell in the metric view — fix it
+  where it happens and show the user something useful. The guard exists for what wasn't
+  anticipated.
+- Because the guard swallows exceptions, a test asserting only `not at.exception` will pass even
+  with the underlying logic broken. Assert `not at.error` too when testing that something
+  actually works.
 
 ## Non-negotiable rules
 

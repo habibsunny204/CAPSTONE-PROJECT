@@ -239,3 +239,41 @@ end of every session — a fresh session has no memory of prior ones beyond what
   Every new regression test was verified to fail against the reverted fix before
   being kept. Suite: 182 -> 217 tests, all passing. Perf re-run: 8.9-17.3ms median,
   unchanged; the scoped path is slightly faster since it reads fewer rows.
+
+## Error handling: no more full-page tracebacks
+
+- 2026-08-11: Fixed a reported crash and the reason it was so destructive.
+
+  **The crash.** With the chart-type override set to `metric` and a result whose first
+  cell is text, the headline-metric view formatted it with `f"{v:,.2f}"` and raised
+  `ValueError: Unknown format code 'f' for object of type 'str'`.
+
+  Probing the override dropdown turned up a **second** latent crash in the same
+  control: choosing line/bar/scatter on any 3+-column result also raised. `select_chart`
+  had chosen `table` and left `x`/`y` as `None`, and the override reused those Nones,
+  which Plotly rejects. So four of the five dropdown options crashed on the result in
+  the screenshot, not one.
+
+  Root cause in both cases: `select_chart` only ever proposes a chart the data can
+  support, but the override let the user pick anything and no code re-checked. Added
+  `auto_select.resolve_override()`, which re-derives axes from the frame's shape and
+  returns None when the data genuinely cannot be drawn that way -- the UI then explains
+  that and shows the table. `charts.format_scalar()` formats numerics with separators
+  and leaves anything else as text. Verified exhaustively: every result shape x every
+  chart type, zero raises.
+
+  **Why it was destructive.** Streamlit replaces the whole page with a traceback on an
+  uncaught exception -- tabs, sidebar, and the entire conversation history vanish behind
+  a stack trace. Added `guarded_section()`, which contains a failure to the section that
+  raised it (inline message, collapsed technical details, traceback logged). Applied per
+  tab, per stored answer, and around both Task D actions, so one undrawable chart can no
+  longer hide an entire conversation.
+
+  Deliberately a backstop, not a replacement for handling known cases: the override bug
+  above is fixed at its source and shows a useful explanation, rather than being left to
+  the guard.
+
+  One testing note worth remembering: because the guard swallows exceptions, an AppTest
+  asserting only `not at.exception` passes even with the logic broken -- verified that
+  directly, then strengthened the test to also require `not at.error`. Every new
+  regression test was checked against the reverted fix. Suite: 217 -> 269 tests.

@@ -197,3 +197,84 @@ def test_build_from_selection_builds_a_figure_for_bar(dataset_config):
     fig = charts.build_from_selection(df, selection, dataset_config)
     assert isinstance(fig, go.Figure)
     assert fig.layout.title.text
+
+
+# ---------------------------------------------------------------------------
+# Chart-type override safety (C3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value,expected", [
+    (42.0, "42.00"),
+    (1234567.891, "1,234,567.89"),
+    (0, "0.00"),
+    (-71.9, "-71.90"),
+    ("Product_8109", "Product_8109"),
+    (None, "n/a"),
+    (float("nan"), "n/a"),
+    (True, "True"),
+])
+def test_format_scalar_handles_every_cell_type(value, expected):
+    """Regression: the headline-metric view formatted with f"{v:,.2f}", which raises
+    ValueError on a non-numeric cell and took the entire dashboard down with it.
+    """
+    assert charts.format_scalar(value) == expected
+
+
+OVERRIDE_FRAMES = {
+    "single_numeric": pd.DataFrame({"n": [42.0]}),
+    "single_string": pd.DataFrame({"name": ["Product_1"]}),
+    "categorical_numeric": pd.DataFrame({"region": ["A", "B"], "revenue": [1.0, 2.0]}),
+    "datetime_numeric": pd.DataFrame({"d": pd.to_datetime(["2022-01-01", "2022-02-01"]),
+                                      "v": [1.0, 2.0]}),
+    "four_column_listing": pd.DataFrame({"product": ["P1", "P2"], "region": ["Asia", "Europe"],
+                                         "category": ["Fashion", "Books"], "price": [612.2, 981.2]}),
+    "all_strings": pd.DataFrame({"a": ["x", "y"], "b": ["p", "q"]}),
+    "empty": pd.DataFrame(),
+}
+
+
+@pytest.mark.parametrize("frame_name", list(OVERRIDE_FRAMES))
+@pytest.mark.parametrize("chart_type", auto_select.ALL_CHART_TYPES)
+def test_every_chart_override_is_safe_on_every_result_shape(frame_name, chart_type, dataset_config):
+    """The override dropdown offers all five chart types for any result, so every
+    combination has to either build a figure or decline cleanly -- never raise.
+
+    Two combinations used to raise: `metric` on a text cell, and line/bar/scatter on a
+    3+-column result (auto-select had chosen `table` and left x/y as None, which Plotly
+    rejects). Both crashed the whole app.
+    """
+    df = OVERRIDE_FRAMES[frame_name]
+    selection = auto_select.resolve_override(df, chart_type)
+    if selection is None:
+        return  # Declined -- the UI falls back to a table and says so.
+    figure = charts.build_from_selection(df, selection, dataset_config)
+    assert figure is None or isinstance(figure, go.Figure)
+
+
+def test_resolve_override_declines_impossible_combinations():
+    """Declining is a real outcome, not just an absence of crashing -- the UI shows an
+    explanation and the table, so these must return None rather than something bogus.
+    """
+    text_only = OVERRIDE_FRAMES["all_strings"]
+    assert auto_select.resolve_override(text_only, auto_select.CHART_BAR) is None
+    assert auto_select.resolve_override(text_only, auto_select.CHART_SCATTER) is None
+
+    multi_row = OVERRIDE_FRAMES["categorical_numeric"]
+    assert auto_select.resolve_override(multi_row, auto_select.CHART_METRIC) is None
+
+    one_numeric = OVERRIDE_FRAMES["categorical_numeric"]
+    assert auto_select.resolve_override(one_numeric, auto_select.CHART_SCATTER) is None
+
+
+def test_resolve_override_finds_axes_the_auto_selection_left_empty():
+    """The bug's mechanism: auto-select returns x=None/y=None for a table, so an
+    override must re-derive axes from the frame rather than reuse them.
+    """
+    df = OVERRIDE_FRAMES["four_column_listing"]
+    assert auto_select.select_chart(df).x is None
+
+    override = auto_select.resolve_override(df, auto_select.CHART_BAR)
+    assert override is not None
+    assert override.x in df.columns and override.y in df.columns
+    assert pd.api.types.is_numeric_dtype(df[override.y])
