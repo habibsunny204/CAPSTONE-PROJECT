@@ -261,7 +261,7 @@ def generate_trend_comparison(
     """Preset 2: the curated aggregation declared in configs/dataset_config.yaml's
     insights.trend_comparison, narrated as a trend/comparison summary. The dims/
     metrics/aggs live in config (not here) so this function stays free of
-    Superstore column-name literals.
+    dataset column-name literals.
     """
     spec = config["insights"]["trend_comparison"]
     df, _ = query_engine.groupby_agg(con, table_name, spec["dims"], spec["metrics"], spec["aggs"])

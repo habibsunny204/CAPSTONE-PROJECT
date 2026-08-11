@@ -3,7 +3,7 @@
 Schema is always introspected live (backend/schema.py) and every dataset-specific
 detail (synonym dictionary, few-shot examples) is read from
 configs/dataset_config.yaml rather than hardcoded here -- this module builds prompt
-*text*, it never contains a Superstore column name as a Python string literal.
+*text*, it never contains a dataset column name as a Python string literal.
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@ comparison narrative and a paired visualization (Task D2).
 Reuses backend/query_engine.py's filtered_query()/groupby_agg() for both sides
 rather than writing new query code, and viz/charts.py's shared theme for the paired
 chart. Which dimension and which two values to compare are chosen by the caller at
-runtime, so nothing here is tied to particular Superstore columns.
+runtime, so nothing here is tied to particular dataset columns.
 """
 
 from __future__ import annotations

@@ -9,7 +9,11 @@ persistent global sidebar filters this dashboard is built around.
 
 Data is loaded and cleaned once per server process via @st.cache_resource, not once
 per rerun -- Streamlit re-executes this whole script top-to-bottom on every widget
-interaction, so an uncached ingest would re-parse the 51k-row CSV on every click.
+interaction, so an uncached ingest would re-parse the 500k-row CSV on every click.
+
+Page chrome (title, headline KPIs, example questions, export provenance) is read from
+configs/dataset_config.yaml's `app` section rather than hardcoded, so this module holds
+no dataset-specific column names or branding.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ from llm import pipeline  # noqa: E402
 from llm.memory import ConversationMemory  # noqa: E402
 from viz import auto_select, charts  # noqa: E402
 
-st.set_page_config(page_title="Superstore AI Analytics", page_icon="B", layout="wide")
+st.set_page_config(page_title=ingest.load_config()["app"]["title"], page_icon="B", layout="wide")
 
 
 # ---------------------------------------------------------------------------
@@ -52,9 +56,9 @@ def load_everything() -> dict[str, Any]:
     table_name = config["dataset"]["table_name"]
 
     con = ingest.load_from_config()
-    profile_before = quality.profile_report(con, table_name, id_column=config["dataset"]["id_column"])
+    profile_before = quality.profile_report(con, table_name, id_column=config["dataset"].get("id_column"))
     clean_report = quality.clean(con, table_name, config)
-    profile_after = quality.profile_report(con, table_name, id_column=config["dataset"]["id_column"])
+    profile_after = quality.profile_report(con, table_name, id_column=config["dataset"].get("id_column"))
 
     return {
         "config": config,
@@ -100,6 +104,11 @@ def render_sidebar_filters(df: pd.DataFrame, config: dict[str, Any]) -> tuple[pd
             continue
 
         if spec["type"] == "date_range":
+            # Dtype-guarded, not just presence-guarded: .min().date() below is only
+            # valid on a datetime column, so a date_range filter pointed at a
+            # non-datetime column is skipped rather than raising AttributeError.
+            if not pd.api.types.is_datetime64_any_dtype(df[column]):
+                continue
             min_date, max_date = df[column].min().date(), df[column].max().date()
             chosen = st.sidebar.date_input(
                 label, value=(min_date, max_date),
@@ -137,14 +146,15 @@ def render_overview_tab(data: dict[str, Any], filtered: pd.DataFrame) -> None:
     config = data["config"]
 
     st.subheader("At a glance")
-    columns = st.columns(4)
+    # Headline metrics come from config's `app.kpis` rather than being hardcoded, so
+    # which measures lead the dashboard is a dataset decision, not a code edit.
+    kpi_specs = [k for k in config["app"].get("kpis", []) if k["column"] in filtered.columns]
+    columns = st.columns(1 + len(kpi_specs))
     columns[0].metric("Rows", f"{len(filtered):,}")
-    columns[1].metric("Total sales", f"{filtered['sales'].sum():,.0f}"
-                      if "sales" in filtered else "n/a")
-    columns[2].metric("Total profit", f"{filtered['profit'].sum():,.0f}"
-                      if "profit" in filtered else "n/a")
-    columns[3].metric("Countries", f"{filtered['country'].nunique():,}"
-                      if "country" in filtered else "n/a")
+    for slot, spec in zip(columns[1:], kpi_specs):
+        series = filtered[spec["column"]]
+        value = series.nunique() if spec["agg"] == "nunique" else getattr(series, spec["agg"])()
+        slot.metric(spec["label"], format(value, spec.get("format", ",.0f")))
 
     if filtered.empty:
         st.warning("No rows match the current filters. Widen them in the sidebar to see charts.")
@@ -191,22 +201,32 @@ def render_exploration_tab(data: dict[str, Any], filtered: pd.DataFrame) -> None
         st.warning("No rows match the current filters. Widen them in the sidebar to see charts.")
         return
 
+    bindings = config["charts"]["curated_bindings"]
+
+    def _stem(chart_name: str) -> str:
+        """Download filename stem, slugified from the chart's configured title so it
+        describes whatever the chart actually shows on the current dataset.
+        """
+        title = bindings[chart_name]["title"]
+        return "".join(c if c.isalnum() else "_" for c in title.lower()).strip("_")
+
     left, right = st.columns(2)
     with left:
-        _chart_with_export(charts.box_plot(filtered, config), "profit_by_category")
+        _chart_with_export(charts.box_plot(filtered, config), _stem("box_plot"))
     with right:
-        _chart_with_export(charts.scatter_regression(filtered, config), "discount_vs_profit")
+        _chart_with_export(charts.scatter_regression(filtered, config), _stem("scatter_regression"))
 
-    _chart_with_export(charts.correlation_heatmap(filtered, config), "correlation_heatmap")
-    _chart_with_export(charts.sunburst(filtered, config), "category_breakdown")
+    _chart_with_export(charts.correlation_heatmap(filtered, config), _stem("correlation_heatmap"))
+    _chart_with_export(charts.sunburst(filtered, config), _stem("sunburst"))
 
-    st.subheader("Region and category breakdown")
-    binding = config["charts"]["curated_bindings"]["stacked_bar"]
+    binding = bindings["stacked_bar"]
     primary = binding["primary_dim"]
-    drill_options = ["All regions"] + sorted(filtered[primary].dropna().unique().tolist())
+    st.subheader(binding["title"])
+    all_label = f"All {primary.replace('_', ' ')}s"
+    drill_options = [all_label] + sorted(filtered[primary].dropna().unique().tolist())
     chosen = st.selectbox("Drill into", drill_options, key="stacked_bar_drill")
-    drill_into = None if chosen == "All regions" else chosen
-    _chart_with_export(charts.stacked_bar(filtered, config, drill_into=drill_into), "region_category")
+    drill_into = None if chosen == all_label else chosen
+    _chart_with_export(charts.stacked_bar(filtered, config, drill_into=drill_into), _stem("stacked_bar"))
 
     with st.expander("Browse the filtered rows"):
         st.dataframe(filtered.head(500), width='stretch')
@@ -281,11 +301,11 @@ def render_ai_tab(data: dict[str, Any], applied_filters: dict[str, Any]) -> None
     transcript = st.container(height=560)
     with transcript:
         if not st.session_state["turns"]:
+            examples = " or ".join(f"*{q}*" for q in config["app"]["example_questions"][:2])
             st.chat_message("assistant").markdown(
-                "Ask me anything about the Superstore data &mdash; for example, "
-                "*what is the total revenue by region?* or *which sub-category is "
-                "least profitable?* You can also use the buttons above for a "
-                "ready-made insight."
+                f"Ask me anything about the {config['app']['dataset_display_name']} data "
+                f"&mdash; for example, {examples} You can also use the buttons above "
+                "for a ready-made insight."
             )
         for index, turn in enumerate(st.session_state["turns"]):
             _render_turn(turn, index, config, applied_filters, data)
@@ -442,7 +462,7 @@ def _render_answer(answer: dict[str, Any], index: int, config: dict[str, Any],
 
     metadata = {
         "Rows": f"{data['profile_after']['n_rows']:,}",
-        "Source": "Global Superstore",
+        "Source": config["app"]["dataset_display_name"],
         "Provider": answer["provider"],
     }
     # Reports are built on demand for the same reason chart images are: each one
@@ -519,7 +539,7 @@ def _render_anomaly_detection(llm_con, table_name: str, config: dict[str, Any],
                                      key="anomaly_limit")
     run = controls[2].button("Detect", type="primary", width='stretch', key="anomaly_run")
 
-    context_columns = [c for c in ("row_id", "order_id", "region", "category", "sub_category")
+    context_columns = [c for c in config["app"].get("anomaly_context_columns", [])
                        if c in data["df"].columns]
 
     if run:
@@ -578,7 +598,8 @@ def _render_comparative_analysis(llm_con, table_name: str, config: dict[str, Any
     mode = st.radio("Compare", ["Two dimension values", "Two date ranges"],
                     horizontal=True, key="comparison_mode")
     metrics = st.multiselect("Metrics", numeric_columns,
-                             default=[c for c in ("sales", "profit") if c in numeric_columns][:2],
+                             default=[c for c in config["app"].get("comparison_default_metrics", [])
+                                      if c in numeric_columns][:2],
                              key="comparison_metrics")
 
     result = None
@@ -651,7 +672,7 @@ def main() -> None:
     _init_session_state()
     data = load_everything()
 
-    st.title("Superstore AI Analytics")
+    st.title(data["config"]["app"]["title"])
     st.caption(
         "Ask questions in plain language; an LLM writes the SQL, a sandbox runs it, "
         "and the result comes back as a chart and a written answer."
