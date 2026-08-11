@@ -13,12 +13,14 @@ it is applied by index, not shuffled per chart.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import yaml
 from plotly.subplots import make_subplots
 
 from viz import auto_select
@@ -97,28 +99,64 @@ def time_series(df: pd.DataFrame, config: dict[str, Any], freq: str = "ME") -> g
             secondary_y=(i == 1),
         )
 
-    fig = apply_theme(fig, config, binding["title"], x_title="Order Date")
+    fig = apply_theme(fig, config, binding["title"],
+                      x_title=binding.get("x_title", _prettify(date_col)))
     for i, metric in enumerate(metrics):
         fig.update_yaxes(title_text=_prettify(metric), secondary_y=(i == 1))
     fig.update_layout(hovermode="x unified")
     return fig
 
 
+def _load_region_countries(path: str) -> dict[str, list[str]]:
+    """Read a region -> member-countries mapping from a YAML file at `path`
+    (relative to the repo root).
+    """
+    full_path = Path(__file__).resolve().parent.parent / path
+    with open(full_path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
 def choropleth(df: pd.DataFrame, config: dict[str, Any]) -> go.Figure:
-    """World choropleth of one metric aggregated by country."""
+    """World choropleth of one metric aggregated by the configured location column.
+
+    Handles two cases, both driven by config rather than by column identity:
+
+    1. The location column already holds country names -- plotted directly.
+    2. The location column holds coarser regions (this dataset's `region` is
+       continent-level, and there is no country column). Setting
+       `region_countries_path` on the binding expands each region to its member
+       countries so the map has shapes to draw, filling every country in a region with
+       that region's total.
+
+    In case 2 the hover text stays bound to the REGION name and the REGION total, so a
+    reader is never shown a country-level number the data does not contain. That
+    distinction is the whole reason this branch is explicit rather than incidental.
+    """
     binding = _bindings(config, "choropleth")
     location_col, metric = binding["location_column"], binding["metric"]
+    locationmode = binding.get("locationmode", "country names")
 
     totals = df.groupby(location_col, as_index=False)[metric].sum()
 
-    fig = px.choropleth(
-        totals, locations=location_col, locationmode="country names",
-        color=metric, color_continuous_scale=binding["color_scale"],
-        labels={metric: _prettify(metric)},
-    )
-    fig.update_traces(
-        hovertemplate=f"%{{location}}<br>{_prettify(metric)}: %{{z:,.0f}}<extra></extra>"
-    )
+    region_countries_path = binding.get("region_countries_path")
+    if region_countries_path:
+        region_countries = _load_region_countries(region_countries_path)
+        expanded = totals.assign(
+            _country=totals[location_col].map(lambda r: region_countries.get(r, []))
+        ).explode("_country").dropna(subset=["_country"])
+        plot_locations, custom_regions = expanded["_country"], expanded[location_col]
+        plot_values = expanded[metric]
+    else:
+        plot_locations, custom_regions = totals[location_col], totals[location_col]
+        plot_values = totals[metric]
+
+    fig = go.Figure(go.Choropleth(
+        locations=plot_locations, z=plot_values, locationmode=locationmode,
+        colorscale=binding["color_scale"], customdata=custom_regions,
+        colorbar=dict(title=_prettify(metric)),
+        # Bound to customdata (the region), never %{location} (the country shape).
+        hovertemplate=f"%{{customdata}}<br>{_prettify(metric)}: %{{z:,.0f}}<extra></extra>",
+    ))
     fig = apply_theme(fig, config, binding["title"])
     fig.update_layout(geo=dict(showframe=False, projection_type="natural earth"))
     return fig
@@ -163,14 +201,23 @@ def box_plot(df: pd.DataFrame, config: dict[str, Any]) -> go.Figure:
     lower_bounds, upper_bounds = [], []
     for i, (name, group) in enumerate(df.groupby(category_col)):
         values = group[metric]
-        q1, q3 = values.quantile(0.25), values.quantile(0.75)
+        q1, median, q3 = values.quantile(0.25), values.quantile(0.5), values.quantile(0.75)
         iqr = q3 - q1
-        lower_bounds.append(q1 - 1.5 * iqr)
-        upper_bounds.append(q3 + 1.5 * iqr)
+        lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        lower_bounds.append(lower)
+        upper_bounds.append(upper)
 
+        # Quartiles are computed here and passed as precomputed statistics rather than
+        # handing Plotly the raw y-values. At this dataset's scale that is the
+        # difference between shipping ~500k floats to the browser per render and
+        # shipping five numbers per box; the drawn result is identical because
+        # boxpoints=False means the individual points were never rendered anyway.
+        whisker_low = max(lower, values.min())
+        whisker_high = min(upper, values.max())
         fig.add_trace(go.Box(
-            y=values, name=str(name),
-            marker_color=colors[i % len(colors)], boxpoints=False,
+            q1=[q1], median=[median], q3=[q3],
+            lowerfence=[whisker_low], upperfence=[whisker_high],
+            name=str(name), marker_color=colors[i % len(colors)], boxpoints=False,
             hovertemplate=f"{name}<br>{_prettify(metric)}: %{{y:,.2f}}<extra></extra>",
         ))
 
@@ -224,7 +271,8 @@ def scatter_regression(df: pd.DataFrame, config: dict[str, Any], sample_size: in
 
     fig = go.Figure()
     fig.add_trace(go.Scattergl(
-        x=plotted[x_col], y=plotted[y_col], mode="markers", name="Orders",
+        x=plotted[x_col], y=plotted[y_col], mode="markers",
+        name=binding.get("point_label", "Records"),
         marker=dict(color=colors[0], size=5, opacity=0.45),
         hovertemplate=f"{_prettify(x_col)}: %{{x}}<br>{_prettify(y_col)}: %{{y:,.2f}}<extra></extra>",
     ))
@@ -269,15 +317,33 @@ def stacked_bar(df: pd.DataFrame, config: dict[str, Any], drill_into: str | None
     return fig
 
 
-CURATED_CHARTS = {
-    "Revenue & Profit Over Time": time_series,
-    "Sales by Country": choropleth,
-    "Correlation Heatmap": correlation_heatmap,
-    "Profit by Category": box_plot,
-    "Category Breakdown": sunburst,
-    "Discount vs Profit": scatter_regression,
-    "Region x Category": stacked_bar,
+# Binding name (the key under charts.curated_bindings in config) -> builder function.
+# Keyed by binding name rather than by display title: titles are dataset-specific and
+# live in config, while these keys are the stable structural names the code refers to.
+CURATED_BUILDERS = {
+    "time_series": time_series,
+    "choropleth": choropleth,
+    "correlation_heatmap": correlation_heatmap,
+    "box_plot": box_plot,
+    "sunburst": sunburst,
+    "scatter_regression": scatter_regression,
+    "stacked_bar": stacked_bar,
 }
+
+
+def curated_charts(config: dict[str, Any]) -> dict[str, Any]:
+    """Display title -> builder function, for every configured curated chart.
+
+    Titles are read from each binding rather than duplicated here, so the menu labels
+    can never drift out of sync with the titles the charts actually render (they
+    previously did), and retargeting the dataset stays a config-only change.
+    """
+    bindings = config["charts"]["curated_bindings"]
+    return {
+        bindings[name]["title"]: builder
+        for name, builder in CURATED_BUILDERS.items()
+        if name in bindings
+    }
 
 
 # ---------------------------------------------------------------------------

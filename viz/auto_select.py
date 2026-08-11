@@ -2,7 +2,7 @@
 
 Fully generic by construction: every rule keys off the *shape* of the result
 DataFrame -- how many columns, and whether each is datetime, numeric, or
-categorical -- never off column identity. There are no Superstore column names in
+categorical -- never off column identity. There are no dataset column names in
 this file, and swapping in a different dataset would not change a line of it
 (PROJECT_SPEC.md Section 2's generic/specific boundary).
 """
