@@ -87,13 +87,19 @@ def _generate_sql(
     question: str,
     history_text: str,
     prompt_options: dict[str, Any] | None = None,
+    scope_description: str = "",
 ) -> tuple[str, str, str, list[dict[str, Any]]]:
     """Phase 1: ask the LLM for SQL. Returns (sql, reasoning, provider, live_schema)
     -- the schema is returned too so a retry doesn't need to re-introspect it.
+
+    Note that `live_schema` is introspected from `con`, so when `con` is a scoped
+    cursor the n_unique/sample_values the model sees already describe the filtered
+    subset rather than the whole table.
     """
     live_schema = schema_module.get_schema(con, table_name)
     system_prompt = prompts.build_sql_system_prompt(
-        live_schema, table_name, config, **(prompt_options or {})
+        live_schema, table_name, config,
+        scope_description=scope_description, **(prompt_options or {})
     )
     user_prompt = f"{history_text}\n\nCurrent question: {question}" if history_text else question
 
@@ -110,10 +116,12 @@ def _generate_sql_retry(
     error_message: str,
     live_schema: list[dict[str, Any]],
     prompt_options: dict[str, Any] | None = None,
+    scope_description: str = "",
 ) -> tuple[str, str, str]:
     """The single Phase 1 retry, after a Phase 2 failure."""
     system_prompt = prompts.build_sql_system_prompt(
-        live_schema, table_name, config, **(prompt_options or {})
+        live_schema, table_name, config,
+        scope_description=scope_description, **(prompt_options or {})
     )
     retry_prompt = prompts.build_sql_retry_prompt(question, failed_sql, error_message)
     result = client.generate(system_prompt, retry_prompt, json_mode=True)
@@ -121,9 +129,10 @@ def _generate_sql_retry(
     return sql, reasoning, result.provider
 
 
-def _generate_narrative(question: str, sql: str, result_df: pd.DataFrame) -> tuple[str, str]:
+def _generate_narrative(question: str, sql: str, result_df: pd.DataFrame,
+                        scope_description: str = "") -> tuple[str, str]:
     """Phase 3: ask the LLM to narrate the result. Returns (narrative, provider)."""
-    system_prompt = prompts.build_narrative_system_prompt()
+    system_prompt = prompts.build_narrative_system_prompt(scope_description)
     user_prompt = prompts.build_narrative_user_prompt(question, sql, result_df)
     result = client.generate(system_prompt, user_prompt, json_mode=False)
     return result.text, result.provider
@@ -147,6 +156,7 @@ def answer_question_sql_only(
     question: str,
     history: list[dict[str, Any]] | None = None,
     prompt_options: dict[str, Any] | None = None,
+    scope_description: str = "",
 ) -> PipelineResult:
     """Phase 1 -> Phase 2 only: generate SQL, validate and execute it, with the
     single retry on failure. The returned PipelineResult carries an empty
@@ -160,7 +170,7 @@ def answer_question_sql_only(
     history_text = prompts.build_conversation_context(history or [])
 
     sql, reasoning, sql_provider, live_schema = _generate_sql(
-        con, table_name, config, question, history_text, prompt_options
+        con, table_name, config, question, history_text, prompt_options, scope_description
     )
     if not sql or not sql.strip():
         return _unanswerable_result(question, sql, reasoning, sql_provider, retried=False)
@@ -172,7 +182,8 @@ def answer_question_sql_only(
         logger.warning("Phase 2 failed for %r (%s); retrying once", sql, first_error)
         retried = True
         sql, reasoning, sql_provider = _generate_sql_retry(
-            table_name, config, question, sql, str(first_error), live_schema, prompt_options
+            table_name, config, question, sql, str(first_error), live_schema,
+            prompt_options, scope_description
         )
         if not sql or not sql.strip():
             return _unanswerable_result(question, sql, reasoning, sql_provider, retried=True)
@@ -197,6 +208,7 @@ def answer_question(
     question: str,
     history: list[dict[str, Any]] | None = None,
     prompt_options: dict[str, Any] | None = None,
+    scope_description: str = "",
 ) -> PipelineResult:
     """Run the full Phase 1 -> Phase 2 -> Phase 3 pipeline for one natural-language
     `question`. `con` should be the connection/cursor dedicated to LLM-generated SQL
@@ -204,14 +216,16 @@ def answer_question(
     B4), newest-last.
     """
     result = answer_question_sql_only(
-        con, table_name, config, question, history, prompt_options
+        con, table_name, config, question, history, prompt_options, scope_description
     )
     # An unanswerable question already carries its explanation as the narrative;
     # narrating an empty result would only invite the model to invent one.
     if not result.sql or not result.sql.strip():
         return result
 
-    narrative, narrative_provider = _generate_narrative(result.question, result.sql, result.result)
+    narrative, narrative_provider = _generate_narrative(
+        result.question, result.sql, result.result, scope_description
+    )
     result.narrative = narrative
     result.narrative_provider = narrative_provider
     return result
@@ -222,10 +236,30 @@ def answer_question(
 # ---------------------------------------------------------------------------
 
 
+_SCOPE_NARRATIVE_NOTE = (
+    " The data described covers only the currently filtered selection ({scope}), not "
+    "the whole dataset -- say so, so the reader does not mistake these for "
+    "dataset-wide figures."
+)
+
+
+def _with_scope(system_prompt: str, scope_description: str) -> str:
+    """Append the filtered-scope caveat to a preset's system prompt, or return it
+    unchanged when no filters are active.
+
+    The preset generators are handed a scoped connection, so their numbers already
+    describe the selection; this only makes the narrative say so.
+    """
+    if not scope_description:
+        return system_prompt
+    return system_prompt + _SCOPE_NARRATIVE_NOTE.format(scope=scope_description)
+
+
 def generate_dataset_overview(
     con: duckdb.DuckDBPyConnection,
     table_name: str,
     config: dict[str, Any],
+    scope_description: str = "",
 ) -> InsightResult:
     """Preset 1: dataset shape + backend/quality.py's profiling summary, narrated
     in plain language. Fully generic -- profile_report() and get_schema() already
@@ -245,7 +279,7 @@ def generate_dataset_overview(
     user_prompt = json.dumps(
         {"profile": profile, "columns": [c["name"] for c in live_schema]}, indent=2, default=str
     )
-    result = client.generate(system_prompt, user_prompt, json_mode=False)
+    result = client.generate(_with_scope(system_prompt, scope_description), user_prompt, json_mode=False)
 
     return InsightResult(
         insight_type="dataset_overview", data={"profile": profile},
@@ -257,6 +291,7 @@ def generate_trend_comparison(
     con: duckdb.DuckDBPyConnection,
     table_name: str,
     config: dict[str, Any],
+    scope_description: str = "",
 ) -> InsightResult:
     """Preset 2: the curated aggregation declared in configs/dataset_config.yaml's
     insights.trend_comparison, narrated as a trend/comparison summary. The dims/
@@ -277,7 +312,7 @@ def generate_trend_comparison(
     user_prompt = json.dumps(
         {"columns": list(df.columns), "rows": df.to_dict(orient="records")}, indent=2, default=str
     )
-    result = client.generate(system_prompt, user_prompt, json_mode=False)
+    result = client.generate(_with_scope(system_prompt, scope_description), user_prompt, json_mode=False)
 
     return InsightResult(
         insight_type="trend_comparison", data={"aggregation": df},
@@ -289,6 +324,7 @@ def generate_anomaly_report(
     con: duckdb.DuckDBPyConnection,
     table_name: str,
     config: dict[str, Any],
+    scope_description: str = "",
 ) -> InsightResult:
     """Preset 3: reuses A3's IQR outlier profiling, picks the numeric column with
     the most outliers -- chosen at runtime from the data, never hardcoded -- pulls a
@@ -335,7 +371,7 @@ def generate_anomaly_report(
         "n_outliers_total": worst["n_outliers_iqr"],
         "sample_outlier_rows": sample_df.to_dict(orient="records"),
     }, indent=2, default=str)
-    result = client.generate(system_prompt, user_prompt, json_mode=False)
+    result = client.generate(_with_scope(system_prompt, scope_description), user_prompt, json_mode=False)
 
     return InsightResult(
         insight_type="anomaly_report", data={"profile": profile, "outlier_samples": sample_df},

@@ -28,6 +28,7 @@ def build_sql_system_prompt(
     config: dict[str, Any],
     include_synonyms: bool = True,
     include_few_shot: bool = True,
+    scope_description: str = "",
 ) -> str:
     """Assemble the Phase 1 (NL -> SQL) system prompt: table name, introspected
     schema JSON, synonym dictionary, and few-shot examples.
@@ -37,6 +38,14 @@ def build_sql_system_prompt(
     individual components removed and measure what each one actually contributes
     to accuracy (PROJECT_SPEC.md Section 10) -- without that, "the synonym
     dictionary helps" would be an assumption rather than a measurement.
+
+    `scope_description` describes the dashboard filters currently in force. The rows
+    are *already* restricted before this SQL runs (the connection points at a filtered
+    view -- see backend/scope.py), so this text is not what makes the answer correct;
+    it exists so the model doesn't silently re-apply a filter that is already applied,
+    and so it can say when a question reaches outside the current selection. Empty by
+    default, and when empty nothing is added at all -- which keeps the prompt
+    byte-identical to the one the benchmark and ablation runs measured.
     """
     synonyms = config.get("synonyms", {}) if include_synonyms else {}
     few_shot = config.get("few_shot_examples", []) if include_few_shot else []
@@ -57,6 +66,15 @@ def build_sql_system_prompt(
         'to an empty string and explain why in "reasoning" instead of guessing or '
         "inventing columns.",
     ]
+
+    if scope_description:
+        parts.append(
+            f'\nThe user has dashboard filters applied, and "{table_name}" already '
+            f"contains only the matching rows: {scope_description}. Do not add these "
+            "conditions to your WHERE clause -- they are already in effect. If the "
+            "question asks about data outside this selection, say so in "
+            '"reasoning" rather than implying the full dataset was searched.'
+        )
 
     if synonyms:
         parts.append(
@@ -89,9 +107,13 @@ def build_sql_retry_prompt(question: str, failed_sql: str, error_message: str) -
     )
 
 
-def build_narrative_system_prompt() -> str:
-    """Phase 3 (result -> narrative) system prompt."""
-    return (
+def build_narrative_system_prompt(scope_description: str = "") -> str:
+    """Phase 3 (result -> narrative) system prompt.
+
+    `scope_description` is appended only when dashboard filters are active, so an
+    answer describes its own scope instead of implying it covered everything.
+    """
+    prompt = (
         "You are a data analyst writing a short answer for a business dashboard. "
         "You will be given the user's original question, the SQL query that was "
         "run, and the resulting data. Write a concise Markdown-formatted narrative "
@@ -100,6 +122,13 @@ def build_narrative_system_prompt() -> str:
         "the result. Never invent or estimate a number that isn't in the result. If "
         "the result is empty, say so plainly instead of fabricating an answer."
     )
+    if scope_description:
+        prompt += (
+            " These figures cover only the currently filtered selection "
+            f"({scope_description}), not the whole dataset -- make that clear so the "
+            "reader does not mistake them for dataset-wide totals."
+        )
+    return prompt
 
 
 def build_narrative_user_prompt(question: str, sql: str, result_df: pd.DataFrame) -> str:
