@@ -89,7 +89,13 @@ Then open http://localhost:8501. The dashboard has four tabs:
 - **AI Assistant** — the chat interface, preset insights, and PDF/Word export per answer
 - **Advanced** — anomaly detection and comparative analysis (Task D)
 
-Sidebar filters apply across the Overview and Exploration tabs and persist across reruns.
+Sidebar filters apply to **every** tab and persist across reruns — the charts, the AI
+Assistant's answers, the preset insights, and both Task D features all describe the same
+filtered rows. See *Filter scope* below for how that works.
+
+The single deliberate exception is the Overview tab's data-quality panel, which reports what
+Task A3 ingestion cleaning did to the source data — a property of the dataset rather than of
+a slice — and says so in its caption.
 
 ## Privacy note
 
@@ -125,7 +131,8 @@ fast, deterministic, and free.
 | `tests/test_viz.py` | Chart auto-selection and the curated chart builders |
 | `tests/test_export.py` | PDF and Word generation |
 | `tests/test_features.py` | Task D's anomaly detection and comparative analysis |
-| `tests/test_app_smoke.py` | Streamlit `AppTest` UI smoke tests |
+| `tests/test_app_smoke.py` | Streamlit `AppTest` UI smoke tests, including that filters scope the SQL path |
+| `tests/test_scope.py` | Filter scope: the pandas and SQL renderings must select the same rows |
 
 ## Benchmarks
 
@@ -171,3 +178,27 @@ shaded with that region's total. The hover text is bound to the **region** name 
 never to the country shape, so the chart cannot be misread as country-level data it does
 not have — [`tests/test_viz.py`](tests/test_viz.py) asserts that the hover template never
 references `%{location}`.
+
+### Filter scope
+
+The sidebar builds one canonical predicate — a list of `{"column", "op", "value"}` dicts, the
+same shape [`backend/query_engine.py`](backend/query_engine.py) already accepts — and renders it
+two ways from that single source:
+
+- **pandas**, for the chart tabs, which hold a DataFrame
+- **a DuckDB view**, for everything else, because the AI Assistant, the preset insights and both
+  Task D features hold a connection and a table name and never see a DataFrame
+
+The view lives in a per-session schema and is named *identically to the base table*, with the
+LLM's cursor pointed at that schema via `search_path`. Keeping the name identical is what makes
+this cheap: `table_name` never changes, so the prompts, the config few-shot examples (which
+contain literal `FROM <table>` SQL) and the sandbox's single-table allowlist all work untouched.
+The model writes an ordinary `FROM <table>` and gets filtered rows.
+
+That indirection is also why [`llm/sandbox.py`](llm/sandbox.py) rejects schema-qualified table
+references: a bare name resolves to the scoped view, but `main.<table>` would reach around it to
+the full table. `tests/test_scope.py` asserts both that the two renderings select the same rows
+and that generated SQL cannot escape the scope.
+
+The schema is per browser session because the DuckDB connection is cached per server process and
+shared — a fixed name would let one user's filters rescope another user's answers.

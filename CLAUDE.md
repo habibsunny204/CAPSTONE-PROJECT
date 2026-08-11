@@ -23,7 +23,7 @@ without flagging the deviation explicitly.
 ## Current repo state
 
 All tasks A1–D2 are **implemented and tested** — see `PROGRESS.md` for per-subtask status. The
-full suite passes (`pytest`, 182 tests + 1 opt-in `live_llm` test).
+full suite passes (`pytest`, 217 tests + 1 opt-in `live_llm` test).
 
 The project was originally built against Global Superstore and has since been **retargeted to
 Global E-Commerce Sales**. `PROJECT_SPEC.md` still describes the Superstore dataset in its prose
@@ -64,6 +64,30 @@ selection** (C needs a result DataFrame to shape-detect on), **D last** (it reus
     step.
 - `payment_method` is deliberately excluded from `categorical_casing_columns`: the cleaner
   title-cases values, which would mangle `PayPal` into `Paypal`. There is a test asserting this.
+
+## Filter scope (added after the dataset migration)
+
+The sidebar filters constrain **every** query path, not just the charts. This matters because
+the two halves of the app consume data differently: the chart tabs hold a pandas DataFrame,
+while the AI Assistant, the preset insights and both Task D features hold only
+`(connection, table_name)`.
+
+- `render_sidebar_filters()` (app.py) builds one canonical spec — `{"column", "op", "value"}`
+  dicts, the shape `query_engine` already takes — and `backend/scope.py` renders it either to a
+  pandas mask or to a DuckDB view.
+- The view sits in a **per-session schema** and is **named identically to the base table**, with
+  the LLM cursor's `search_path` pointed at that schema. So `table_name` never changes and the
+  prompts, config few-shot SQL, and sandbox allowlist need no edits. Do not "fix" this by
+  renaming the view — that breaks the few-shot examples, which contain literal `FROM <table>`.
+- **`llm/sandbox.py` rejects schema/catalog-qualified table names.** This is load-bearing, not
+  cosmetic: a bare name resolves through `search_path` to the scoped view, but `main.<table>`
+  reaches around it to the unfiltered table. Do not relax it.
+- The per-session schema name exists because the DuckDB connection is `@st.cache_resource`d and
+  shared across browser sessions.
+- One deliberate exception: the Overview tab's data-quality panel stays dataset-wide, since it
+  documents A3 ingestion cleaning rather than a slice. Its caption says so, and a test pins it.
+- `tests/test_scope.py` asserts the pandas and SQL renderings select the same rows. If you touch
+  either renderer, that test is the one that catches divergence.
 
 ## Non-negotiable rules
 
@@ -118,7 +142,7 @@ The project targets Global E-Commerce Sales only, but the specific/generic split
 deliberate — it is what made retargeting from the previous dataset a mostly config-only change:
 
 - **Must stay generic** (no dataset column names as literals): `backend/` (ingestion, schema
-  introspection, query engine, quality profiling), `llm/pipeline.py`, `llm/sandbox.py`,
+  introspection, query engine, quality profiling, scope), `llm/pipeline.py`, `llm/sandbox.py`,
   `viz/auto_select.py` (keys off result *shape* — datetime+numeric, categorical+numeric — never
   off column identity).
 - **Allowed to be dataset-specific, but centralized**: the synonym dictionary, curated-chart
@@ -136,7 +160,7 @@ configs/dataset_config.yaml   # synonym map, dataset path, curated-chart binding
 configs/region_countries.yaml # region -> ISO-3 country codes (choropleth only)
 data/raw/                     # global_ecommerce_sales.csv (gitignored)
 app/app.py                    # Streamlit entrypoint
-backend/                      # ingest.py, schema.py, query_engine.py, quality.py, benchmark_perf.py
+backend/                      # ingest.py, schema.py, query_engine.py, quality.py, scope.py, benchmark_perf.py
 llm/                          # client.py (Gemini->Groq failover), prompts.py, pipeline.py, sandbox.py, memory.py
 viz/                          # charts.py, auto_select.py
 features/                     # anomaly_detection.py, comparative_analysis.py  (Task D)

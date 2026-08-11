@@ -1,0 +1,104 @@
+{
+  "generated_at": "2026-08-11T15:02:26.963897+00:00",
+  "python_version": "3.14.0 (tags/v3.14.0:ebf955d, Oct  7 2025, 10:15:03) [MSC v.1944 64 bit (AMD64)]",
+  "duckdb_version": "1.5.5",
+  "n_rows": 500000,
+  "pass_threshold_ms": 500.0,
+  "n_warmup": 2,
+  "n_iterations": 30,
+  "scenarios": [
+    {
+      "name": "revenue_by_region_credit_card",
+      "params": {
+        "dims": [
+          "region"
+        ],
+        "metrics": [
+          "total_revenue"
+        ],
+        "aggs": [
+          "sum"
+        ],
+        "filters": [
+          {
+            "column": "payment_method",
+            "op": "=",
+            "value": "Credit Card"
+          }
+        ]
+      },
+      "n_iterations": 30,
+      "stats_ms": {
+        "min_ms": 6.850099998700898,
+        "median_ms": 8.93044999884296,
+        "mean_ms": 8.916106666523168,
+        "max_ms": 10.936799999399227,
+        "p95_ms": 10.178000000450993
+      },
+      "passed": true
+    },
+    {
+      "name": "revenue_quantity_by_region_category_2023plus",
+      "params": {
+        "dims": [
+          "region",
+          "category"
+        ],
+        "metrics": [
+          "total_revenue",
+          "quantity"
+        ],
+        "aggs": [
+          "sum",
+          "avg"
+        ],
+        "filters": [
+          {
+            "column": "transaction_date",
+            "op": ">=",
+            "value": "2023-01-01"
+          }
+        ]
+      },
+      "n_iterations": 30,
+      "stats_ms": {
+        "min_ms": 14.058900000236463,
+        "median_ms": 17.316700000264973,
+        "mean_ms": 19.902256666803925,
+        "max_ms": 36.49740000037127,
+        "p95_ms": 35.78850000121747
+      },
+      "passed": true
+    },
+    {
+      "name": "avg_revenue_high_discount_transactions",
+      "params": {
+        "dims": [
+          "category"
+        ],
+        "metrics": [
+          "total_revenue"
+        ],
+        "aggs": [
+          "avg"
+        ],
+        "filters": [
+          {
+            "column": "discount_pct",
+            "op": ">",
+            "value": 20
+          }
+        ]
+      },
+      "n_iterations": 30,
+      "stats_ms": {
+        "min_ms": 7.289000001037493,
+        "median_ms": 9.516899999653106,
+        "mean_ms": 9.560366666664777,
+        "max_ms": 17.450299999836716,
+        "p95_ms": 11.034299999664654
+      },
+      "passed": true
+    }
+  ]
+}

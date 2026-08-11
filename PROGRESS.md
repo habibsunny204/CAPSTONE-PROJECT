@@ -185,3 +185,57 @@ end of every session — a fresh session has no memory of prior ones beyond what
   and verified to match their `reference_sql`, preserving the original category mix.
   **The accuracy benchmark has not been re-run live against the new questions** -- that
   needs API quota, same constraint as the ablation sweep below.
+
+## Filter scope: making the sidebar constrain every tab
+
+- 2026-08-11: Fixed a reported bug where the sidebar filters only affected the
+  charts. With a date range applied (250,504 of 500,000 rows) the AI Assistant
+  still answered from the full table, because `render_sidebar_filters` returned a
+  pandas DataFrame that only the Overview and Exploration tabs consumed, while the
+  AI Assistant, all three preset insights and both Task D features received an
+  unscoped `data["con"].cursor()`.
+
+  The sidebar now builds a **canonical filter spec** (`{"column","op","value"}`
+  dicts, the shape `query_engine` already accepts) and `backend/scope.py` renders it
+  two ways: a pandas mask for the charts, and a DuckDB view for every
+  connection-based path. `tests/test_scope.py` asserts the two select identical rows
+  -- that invariant is the whole reason the spec is canonical rather than each path
+  filtering for itself.
+
+  **Mechanism chosen by measurement, not preference.** Two approaches were
+  benchmarked on the real 500k rows: a DuckDB view with a per-cursor `search_path`
+  (build 1.4ms, groupby 11.7ms, profile_report 252ms) versus registering the filtered
+  pandas frame on a fresh connection (163ms / 184ms / 1,648ms). `profile_report` was
+  decisive -- it runs on every Advanced-tab interaction, where 1.6s would stall the
+  UI.
+
+  The view is named **identically to the base table** inside a per-session schema.
+  That is what keeps the change cheap: `table_name` never changes, so the prompts,
+  the config few-shot examples (which contain literal `FROM ecommerce_sales`) and the
+  sandbox's single-table allowlist all work untouched. The model writes ordinary
+  unqualified SQL and gets filtered rows. The schema is per-session because the
+  DuckDB connection is `@st.cache_resource`d and shared across browser sessions.
+
+  **A pre-existing security hole had to be closed for this to hold.**
+  `sandbox.py` compared only `node.name`, ignoring `node.db`/`node.catalog`, so
+  `SELECT COUNT(*) FROM main.ecommerce_sales` passed validation and returned all
+  500,000 rows while the cursor was scoped to 83,354 -- verified against the running
+  system. It was already a latent bug (the module docstring claimed a stronger
+  guarantee than the code enforced, and `information_schema.tables` was only rejected
+  because its final identifier happened to be `tables`), and the scoped view turned
+  it into a scope-escape. Qualified references are now rejected outright; five new
+  exploit cases cover it.
+
+  Also fixed a provenance defect: exported PDF/Word reports printed the applied
+  filters beside a dataset-wide row count, so a report could read
+  "Filters -- Region: Europe" above "Rows: 500,000". The count now reports the scope
+  the answer actually ran against.
+
+  Two semantics decisions, both deliberate: anomaly IQR fences are computed **within**
+  the scope ("what is unusual in this selection"), and the Overview data-quality panel
+  stays **dataset-wide** because it documents A3 ingestion cleaning rather than a
+  slice. Both are pinned by tests.
+
+  Every new regression test was verified to fail against the reverted fix before
+  being kept. Suite: 182 -> 217 tests, all passing. Perf re-run: 8.9-17.3ms median,
+  unchanged; the scoped path is slightly faster since it reads fewer rows.
