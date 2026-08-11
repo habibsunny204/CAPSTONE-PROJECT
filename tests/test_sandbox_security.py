@@ -10,41 +10,41 @@ import pytest
 
 from llm.sandbox import SandboxViolation, execute_safe, validate_sql
 
-TABLE_NAME = "superstore"
+TABLE_NAME = "ecommerce_sales"
 
 # (label, sql) -- every one of these must be rejected.
 EXPLOIT_ATTEMPTS = [
     ("create_table", "CREATE TABLE evil (a INT)"),
-    ("drop_table", "DROP TABLE superstore"),
-    ("alter_table", "ALTER TABLE superstore ADD COLUMN evil INT"),
-    ("insert", "INSERT INTO superstore (row_id) VALUES (999999)"),
-    ("update", "UPDATE superstore SET sales = 0"),
-    ("delete", "DELETE FROM superstore"),
+    ("drop_table", "DROP TABLE ecommerce_sales"),
+    ("alter_table", "ALTER TABLE ecommerce_sales ADD COLUMN evil INT"),
+    ("insert", "INSERT INTO ecommerce_sales (product) VALUES (999999)"),
+    ("update", "UPDATE ecommerce_sales SET total_revenue = 0"),
+    ("delete", "DELETE FROM ecommerce_sales"),
     ("attach", "ATTACH 'evil.db' AS evil"),
-    ("detach", "DETACH superstore"),
-    ("pragma", "PRAGMA table_info('superstore')"),
+    ("detach", "DETACH ecommerce_sales"),
+    ("pragma", "PRAGMA table_info('ecommerce_sales')"),
     ("install", "INSTALL httpfs"),
     ("load", "LOAD httpfs"),
-    ("copy_to", "COPY superstore TO 'exfiltrated.csv'"),
-    ("copy_from", "COPY superstore FROM 'evil.csv'"),
+    ("copy_to", "COPY ecommerce_sales TO 'exfiltrated.csv'"),
+    ("copy_from", "COPY ecommerce_sales FROM 'evil.csv'"),
     ("export_database", "EXPORT DATABASE 'out'"),
-    ("multiple_statements", "SELECT * FROM superstore; DROP TABLE superstore"),
-    ("multiple_statements_select_only", "SELECT * FROM superstore; SELECT * FROM superstore"),
+    ("multiple_statements", "SELECT * FROM ecommerce_sales; DROP TABLE ecommerce_sales"),
+    ("multiple_statements_select_only", "SELECT * FROM ecommerce_sales; SELECT * FROM ecommerce_sales"),
     ("read_csv_outside_table", "SELECT * FROM read_csv('/etc/passwd')"),
     ("read_csv_auto_outside_table", "SELECT * FROM read_csv_auto('/etc/passwd')"),
     ("read_parquet_outside_table", "SELECT * FROM read_parquet('secrets.parquet')"),
     ("read_json_outside_table", "SELECT * FROM read_json_auto('secrets.json')"),
     ("bare_file_path", "SELECT * FROM 'secrets.csv'"),
     ("unknown_table", "SELECT * FROM some_other_table"),
-    ("joined_unknown_table", "SELECT s.* FROM superstore s JOIN secrets sec ON s.row_id = sec.id"),
-    ("subquery_unknown_table", "SELECT * FROM superstore WHERE row_id IN (SELECT id FROM secrets)"),
-    ("pragma_table_function", "SELECT * FROM pragma_table_info('superstore')"),
+    ("joined_unknown_table", "SELECT s.* FROM ecommerce_sales s JOIN secrets sec ON s.product = sec.id"),
+    ("subquery_unknown_table", "SELECT * FROM ecommerce_sales WHERE product IN (SELECT id FROM secrets)"),
+    ("pragma_table_function", "SELECT * FROM pragma_table_info('ecommerce_sales')"),
     ("information_schema", "SELECT * FROM information_schema.tables"),
     ("empty_string", ""),
     ("whitespace_only", "   \n\t  "),
     ("garbage", "not even sql at all !!! ???"),
     ("call_statement", "CALL some_procedure()"),
-    ("vacuum", "VACUUM superstore"),
+    ("vacuum", "VACUUM ecommerce_sales"),
 ]
 
 
@@ -55,13 +55,13 @@ def test_validate_sql_rejects_exploit_attempts(label, sql):
 
 
 def test_validate_sql_accepts_plain_select():
-    stmt = validate_sql("SELECT region, sales FROM superstore WHERE region = 'West'", TABLE_NAME)
+    stmt = validate_sql("SELECT region, total_revenue FROM ecommerce_sales WHERE region = 'Asia'", TABLE_NAME)
     assert stmt is not None
 
 
 def test_validate_sql_accepts_select_with_cte():
     sql = (
-        "WITH regional AS (SELECT region, SUM(sales) AS total FROM superstore GROUP BY region) "
+        "WITH regional AS (SELECT region, SUM(total_revenue) AS total FROM ecommerce_sales GROUP BY region) "
         "SELECT * FROM regional WHERE total > 0"
     )
     stmt = validate_sql(sql, TABLE_NAME)
@@ -69,7 +69,7 @@ def test_validate_sql_accepts_select_with_cte():
 
 
 def test_validate_sql_accepts_union_of_selects():
-    sql = "SELECT region FROM superstore UNION SELECT region FROM superstore"
+    sql = "SELECT region FROM ecommerce_sales UNION SELECT region FROM ecommerce_sales"
     stmt = validate_sql(sql, TABLE_NAME)
     assert stmt is not None
 
@@ -79,7 +79,7 @@ def test_validate_sql_treats_sql_inside_comments_as_inert():
     parsed as executable statements, so this remains a plain, safe SELECT. This
     confirms comment-based statement smuggling doesn't work against validate_sql().
     """
-    sql = "SELECT * FROM superstore /* ; DROP TABLE superstore; */ WHERE 1=1"
+    sql = "SELECT * FROM ecommerce_sales /* ; DROP TABLE ecommerce_sales; */ WHERE 1=1"
     stmt = validate_sql(sql, TABLE_NAME)
     assert stmt is not None
 
@@ -88,12 +88,12 @@ def test_validate_sql_case_insensitive_table_match():
     """The loaded table name comparison is case-insensitive (SQL identifiers
     normalize this way in DuckDB by default).
     """
-    stmt = validate_sql("SELECT * FROM SUPERSTORE", TABLE_NAME)
+    stmt = validate_sql("SELECT * FROM ECOMMERCE_SALES", TABLE_NAME)
     assert stmt is not None
 
 
 def test_execute_safe_runs_a_valid_query(mini_con):
-    df = execute_safe(mini_con, 'SELECT COUNT(*) AS n FROM "superstore"', TABLE_NAME)
+    df = execute_safe(mini_con, 'SELECT COUNT(*) AS n FROM "ecommerce_sales"', TABLE_NAME)
     assert df["n"].iloc[0] == 16
 
 
@@ -101,7 +101,7 @@ def test_execute_safe_blocks_exploit_and_leaves_table_untouched(mini_con):
     before = mini_con.execute(f'SELECT COUNT(*) FROM "{TABLE_NAME}"').fetchone()[0]
 
     with pytest.raises(SandboxViolation):
-        execute_safe(mini_con, "DELETE FROM superstore", TABLE_NAME)
+        execute_safe(mini_con, "DELETE FROM ecommerce_sales", TABLE_NAME)
 
     after = mini_con.execute(f'SELECT COUNT(*) FROM "{TABLE_NAME}"').fetchone()[0]
     assert after == before

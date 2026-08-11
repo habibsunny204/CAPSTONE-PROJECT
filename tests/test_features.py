@@ -16,7 +16,7 @@ import pytest
 from features import anomaly_detection, comparative_analysis
 from llm import client
 
-TABLE_NAME = "superstore"
+TABLE_NAME = "ecommerce_sales"
 
 
 def _fake_generate(text="A narrative."):
@@ -31,10 +31,10 @@ def _fake_generate(text="A narrative."):
 
 
 def test_outlier_columns_finds_the_seeded_outlier(mini_con_clean, dataset_config):
-    """The fixture's row 12 has sales=5000 among values of 90-200."""
+    """The fixture's row 12 has total_revenue=5000 among values of 84-800."""
     columns = anomaly_detection.outlier_columns(mini_con_clean, TABLE_NAME, dataset_config)
     names = [c["name"] for c in columns]
-    assert "sales" in names
+    assert "total_revenue" in names
 
 
 def test_outlier_columns_sorted_worst_first(mini_con_clean, dataset_config):
@@ -44,10 +44,10 @@ def test_outlier_columns_sorted_worst_first(mini_con_clean, dataset_config):
 
 
 def test_detect_anomalies_flags_the_extreme_row(mini_con_clean, dataset_config):
-    """The 5000 sales value must be flagged, above the fence."""
+    """The 5000 total_revenue value must be flagged, above the fence."""
     report = anomaly_detection.detect_anomalies(
-        mini_con_clean, TABLE_NAME, dataset_config, column="sales",
-        context_columns=["row_id", "region"],
+        mini_con_clean, TABLE_NAME, dataset_config, column="total_revenue",
+        context_columns=["transaction_date", "region"],
     )
     values = [a.value for a in report.anomalies]
     assert 5000 in values
@@ -59,7 +59,7 @@ def test_detect_anomalies_flags_the_extreme_row(mini_con_clean, dataset_config):
 
 def test_detect_anomalies_ranks_by_severity(mini_con_clean, dataset_config):
     report = anomaly_detection.detect_anomalies(
-        mini_con_clean, TABLE_NAME, dataset_config, column="sales", context_columns=["row_id"],
+        mini_con_clean, TABLE_NAME, dataset_config, column="total_revenue", context_columns=["transaction_date"],
     )
     severities = [a.severity for a in report.anomalies]
     assert severities == sorted(severities, reverse=True)
@@ -69,8 +69,8 @@ def test_detect_anomalies_ranks_by_severity(mini_con_clean, dataset_config):
 
 def test_detect_anomalies_respects_limit(mini_con_clean, dataset_config):
     report = anomaly_detection.detect_anomalies(
-        mini_con_clean, TABLE_NAME, dataset_config, column="sales",
-        context_columns=["row_id"], limit=1,
+        mini_con_clean, TABLE_NAME, dataset_config, column="total_revenue",
+        context_columns=["transaction_date"], limit=1,
     )
     assert len(report.anomalies) == 1
 
@@ -89,13 +89,13 @@ def test_detect_anomalies_makes_no_llm_call(mini_con_clean, dataset_config, monk
 
     monkeypatch.setattr(anomaly_detection.client, "generate", explode)
     anomaly_detection.detect_anomalies(
-        mini_con_clean, TABLE_NAME, dataset_config, column="sales", context_columns=["row_id"]
+        mini_con_clean, TABLE_NAME, dataset_config, column="total_revenue", context_columns=["transaction_date"]
     )
 
 
 def test_report_to_frame_includes_direction_and_severity(mini_con_clean, dataset_config):
     report = anomaly_detection.detect_anomalies(
-        mini_con_clean, TABLE_NAME, dataset_config, column="sales", context_columns=["row_id"],
+        mini_con_clean, TABLE_NAME, dataset_config, column="total_revenue", context_columns=["transaction_date"],
     )
     frame = report.to_frame()
     assert "_direction" in frame.columns
@@ -104,18 +104,18 @@ def test_report_to_frame_includes_direction_and_severity(mini_con_clean, dataset
 
 
 def test_explain_anomalies_fills_in_narrative(mini_con_clean, dataset_config, monkeypatch):
-    monkeypatch.setattr(anomaly_detection.client, "generate", _fake_generate("Row 12 is unusual."))
+    monkeypatch.setattr(anomaly_detection.client, "generate", _fake_generate("The 5000 transaction is unusual."))
     report = anomaly_detection.detect_anomalies(
-        mini_con_clean, TABLE_NAME, dataset_config, column="sales", context_columns=["row_id"],
+        mini_con_clean, TABLE_NAME, dataset_config, column="total_revenue", context_columns=["transaction_date"],
     )
     explained = anomaly_detection.explain_anomalies(report)
-    assert explained.narrative == "Row 12 is unusual."
+    assert explained.narrative == "The 5000 transaction is unusual."
     assert explained.provider == "gemini"
 
 
 def test_explain_anomalies_handles_no_anomalies():
     """An empty report must not call the LLM or crash."""
-    empty = anomaly_detection.AnomalyReport(column="sales", bounds={}, n_total_outliers=0)
+    empty = anomaly_detection.AnomalyReport(column="total_revenue", bounds={}, n_total_outliers=0)
     explained = anomaly_detection.explain_anomalies(empty)
     assert "No IQR-based outliers" in explained.narrative
     assert explained.provider == "none"
@@ -127,24 +127,24 @@ def test_explain_anomalies_handles_no_anomalies():
 
 
 def test_compare_dimension_values_totals_match_the_fixture(mini_con_clean, dataset_config):
-    """Hand-computed from the fixture: West sales 6180, East 597."""
+    """Hand-computed from the fixture: Asia total_revenue 7594, Europe 706."""
     result = comparative_analysis.compare_dimension_values(
         mini_con_clean, TABLE_NAME, dimension="region",
-        left_value="West", right_value="East", metrics=["sales"],
+        left_value="Asia", right_value="Europe", metrics=["total_revenue"],
     )
-    assert result.left.totals["sales"] == pytest.approx(6180)
-    assert result.right.totals["sales"] == pytest.approx(597)
+    assert result.left.totals["total_revenue"] == pytest.approx(7594)
+    assert result.right.totals["total_revenue"] == pytest.approx(706)
 
 
 def test_compare_computes_absolute_and_percent_deltas(mini_con_clean, dataset_config):
-    """Deltas are right-minus-left: 597 - 6180 = -5583, i.e. -90.34%."""
+    """Deltas are right-minus-left: 706 - 7594 = -6888, i.e. -90.70%."""
     result = comparative_analysis.compare_dimension_values(
         mini_con_clean, TABLE_NAME, dimension="region",
-        left_value="West", right_value="East", metrics=["sales"],
+        left_value="Asia", right_value="Europe", metrics=["total_revenue"],
     )
-    delta = result.deltas["sales"]
-    assert delta["absolute"] == pytest.approx(-5583)
-    assert delta["percent"] == pytest.approx(-90.34, abs=0.01)
+    delta = result.deltas["total_revenue"]
+    assert delta["absolute"] == pytest.approx(-6888)
+    assert delta["percent"] == pytest.approx(-90.70, abs=0.01)
 
 
 def test_compare_handles_zero_baseline_without_dividing_by_zero(mini_con_clean, dataset_config):
@@ -153,28 +153,31 @@ def test_compare_handles_zero_baseline_without_dividing_by_zero(mini_con_clean, 
     """
     result = comparative_analysis.compare_dimension_values(
         mini_con_clean, TABLE_NAME, dimension="region",
-        left_value="Nowhere", right_value="West", metrics=["sales"],
+        left_value="Nowhere", right_value="Asia", metrics=["total_revenue"],
     )
-    assert result.left.totals["sales"] == 0
-    assert math.isnan(result.deltas["sales"]["percent"])
+    assert result.left.totals["total_revenue"] == 0
+    assert math.isnan(result.deltas["total_revenue"]["percent"])
 
 
 def test_compare_counts_rows_per_side(mini_con_clean, dataset_config):
     result = comparative_analysis.compare_dimension_values(
         mini_con_clean, TABLE_NAME, dimension="region",
-        left_value="West", right_value="East", metrics=["sales"],
+        left_value="Asia", right_value="Europe", metrics=["total_revenue"],
     )
-    assert result.left.n_rows == 10
-    assert result.right.n_rows == 6
+    assert result.left.n_rows == 8
+    # Europe has 5 rows in the fixture, but rows 7 and 8 have a null total_revenue and
+    # so contribute nothing to the metric being compared. Counting 3 here (not 5) is
+    # what keeps n_rows consistent with the total it accompanies.
+    assert result.right.n_rows == 3
 
 
 def test_compare_date_ranges(mini_con_clean, dataset_config):
-    """Both fixture months are in 2013; January vs February should both be non-empty."""
+    """Both fixture months are in 2022; January vs February should both be non-empty."""
     result = comparative_analysis.compare_date_ranges(
-        mini_con_clean, TABLE_NAME, date_column="order_date",
-        left_range=("2013-01-01", "2013-01-31"),
-        right_range=("2013-02-01", "2013-02-28"),
-        metrics=["sales"],
+        mini_con_clean, TABLE_NAME, date_column="transaction_date",
+        left_range=("2022-01-01", "2022-01-31"),
+        right_range=("2022-02-01", "2022-02-28"),
+        metrics=["total_revenue"],
     )
     assert result.left.n_rows > 0
     assert result.right.n_rows > 0
@@ -183,18 +186,18 @@ def test_compare_date_ranges(mini_con_clean, dataset_config):
 def test_comparison_to_frame_is_tidy(mini_con_clean, dataset_config):
     result = comparative_analysis.compare_dimension_values(
         mini_con_clean, TABLE_NAME, dimension="region",
-        left_value="West", right_value="East", metrics=["sales", "profit"],
+        left_value="Asia", right_value="Europe", metrics=["total_revenue", "price"],
     )
     frame = result.to_frame()
-    assert list(frame["Metric"]) == ["Sales", "Profit"]
-    assert "West" in frame.columns and "East" in frame.columns
+    assert list(frame["Metric"]) == ["Total Revenue", "Price"]
+    assert "Asia" in frame.columns and "Europe" in frame.columns
     assert "Difference" in frame.columns and "% change" in frame.columns
 
 
 def test_build_comparison_chart(mini_con_clean, dataset_config):
     result = comparative_analysis.compare_dimension_values(
         mini_con_clean, TABLE_NAME, dimension="region",
-        left_value="West", right_value="East", metrics=["sales", "profit"],
+        left_value="Asia", right_value="Europe", metrics=["total_revenue", "price"],
     )
     figure = comparative_analysis.build_comparison_chart(result, dataset_config)
     assert isinstance(figure, go.Figure)
@@ -203,13 +206,13 @@ def test_build_comparison_chart(mini_con_clean, dataset_config):
 
 
 def test_explain_comparison_fills_in_narrative(mini_con_clean, dataset_config, monkeypatch):
-    monkeypatch.setattr(comparative_analysis.client, "generate", _fake_generate("West leads."))
+    monkeypatch.setattr(comparative_analysis.client, "generate", _fake_generate("Asia leads."))
     result = comparative_analysis.compare_dimension_values(
         mini_con_clean, TABLE_NAME, dimension="region",
-        left_value="West", right_value="East", metrics=["sales"],
+        left_value="Asia", right_value="Europe", metrics=["total_revenue"],
     )
     explained = comparative_analysis.explain_comparison(result)
-    assert explained.narrative == "West leads."
+    assert explained.narrative == "Asia leads."
     assert explained.provider == "gemini"
 
 
@@ -227,7 +230,7 @@ def test_comparison_prompt_rounds_figures(mini_con_clean, dataset_config, monkey
     monkeypatch.setattr(comparative_analysis.client, "generate", capture)
     result = comparative_analysis.compare_dimension_values(
         mini_con_clean, TABLE_NAME, dimension="region",
-        left_value="West", right_value="East", metrics=["sales", "profit"],
+        left_value="Asia", right_value="Europe", metrics=["total_revenue", "price"],
     )
     comparative_analysis.explain_comparison(result)
 
@@ -256,8 +259,8 @@ def test_anomaly_prompt_rounds_figures(mini_con_clean, dataset_config, monkeypat
 
     monkeypatch.setattr(anomaly_detection.client, "generate", capture)
     report = anomaly_detection.detect_anomalies(
-        mini_con_clean, TABLE_NAME, dataset_config, column="profit",
-        context_columns=["row_id", "sales"],
+        mini_con_clean, TABLE_NAME, dataset_config, column="price",
+        context_columns=["transaction_date", "total_revenue"],
     )
     anomaly_detection.explain_anomalies(report)
 

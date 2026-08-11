@@ -103,28 +103,28 @@ def test_prompt_flags_actually_remove_components(dataset_config):
     """The ablation is only meaningful if the flags change the prompt -- assert
     the synonym dictionary and few-shot examples really do drop out.
     """
-    schema = [{"name": "sales", "dtype": "BIGINT", "n_unique": 10, "n_null": 0,
+    schema = [{"name": "total_revenue", "dtype": "BIGINT", "n_unique": 10, "n_null": 0,
                "sample_values": [1, 2, 3]}]
 
-    full = prompts.build_sql_system_prompt(schema, "superstore", dataset_config)
+    full = prompts.build_sql_system_prompt(schema, "ecommerce_sales", dataset_config)
     schema_only = prompts.build_sql_system_prompt(
-        schema, "superstore", dataset_config, include_synonyms=False, include_few_shot=False
+        schema, "ecommerce_sales", dataset_config, include_synonyms=False, include_few_shot=False
     )
 
     assert SYNONYM_SECTION in full and SYNONYM_SECTION not in schema_only
     assert FEW_SHOT_SECTION in full and FEW_SHOT_SECTION not in schema_only
     # The schema itself must survive in both -- that's the baseline, not a component.
-    assert "sales" in schema_only
+    assert "total_revenue" in schema_only
 
 
 def test_prompt_flags_are_independent(dataset_config):
-    schema = [{"name": "sales", "dtype": "BIGINT", "n_unique": 1, "n_null": 0, "sample_values": [1]}]
+    schema = [{"name": "total_revenue", "dtype": "BIGINT", "n_unique": 1, "n_null": 0, "sample_values": [1]}]
 
     synonyms_only = prompts.build_sql_system_prompt(
-        schema, "superstore", dataset_config, include_synonyms=True, include_few_shot=False
+        schema, "ecommerce_sales", dataset_config, include_synonyms=True, include_few_shot=False
     )
     few_shot_only = prompts.build_sql_system_prompt(
-        schema, "superstore", dataset_config, include_synonyms=False, include_few_shot=True
+        schema, "ecommerce_sales", dataset_config, include_synonyms=False, include_few_shot=True
     )
 
     assert SYNONYM_SECTION in synonyms_only and FEW_SHOT_SECTION not in synonyms_only
@@ -205,7 +205,7 @@ def test_ablation_aborts_when_providers_are_exhausted(monkeypatch, dataset_confi
 
     with pytest.raises(run_ablation.QuotaExhausted):
         run_ablation.run_configuration(
-            llm_con=None, table_name="superstore", config=dataset_config,
+            llm_con=None, table_name="ecommerce_sales", config=dataset_config,
             questions=questions, prompt_options={},
         )
 
@@ -229,7 +229,7 @@ def test_ablation_tolerates_a_few_provider_failures(monkeypatch, dataset_config)
     ]
 
     outcome = run_ablation.run_configuration(
-        llm_con=None, table_name="superstore", config=dataset_config,
+        llm_con=None, table_name="ecommerce_sales", config=dataset_config,
         questions=questions, prompt_options={},
     )
     assert outcome["n_provider_failures"] == 1
@@ -246,14 +246,14 @@ def test_answer_question_sql_only_skips_the_narrative(mini_con, dataset_config, 
         calls.append(json_mode)
         from llm import client
         return client.LLMResult(
-            text=json_module.dumps({"sql": "SELECT COUNT(*) AS n FROM superstore",
+            text=json_module.dumps({"sql": "SELECT COUNT(*) AS n FROM ecommerce_sales",
                                     "reasoning": "count"}),
             provider="gemini", elapsed_ms=1.0,
         )
 
     monkeypatch.setattr(pipeline.client, "generate", fake_generate)
     result = pipeline.answer_question_sql_only(
-        mini_con, "superstore", dataset_config, "how many rows?"
+        mini_con, "ecommerce_sales", dataset_config, "how many rows?"
     )
 
     assert len(calls) == 1, "only Phase 1 should call the LLM"

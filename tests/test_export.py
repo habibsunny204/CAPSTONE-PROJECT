@@ -33,7 +33,7 @@ def test_pdf_export_produces_valid_pdf_bytes(result_df, figure):
     pdf_bytes = build_answer_pdf(
         question=QUESTION, narrative=NARRATIVE, sql="SELECT 1",
         result=result_df, figure=figure,
-        dataset_metadata={"Rows": "51,290"}, applied_filters={"Region": "All"},
+        dataset_metadata={"Rows": "500,000"}, applied_filters={"Region": "All"},
     )
     assert pdf_bytes.startswith(b"%PDF")
     assert len(pdf_bytes) > 1000
@@ -43,7 +43,7 @@ def test_docx_export_produces_valid_docx_bytes(result_df, figure):
     docx_bytes = build_answer_docx(
         question=QUESTION, narrative=NARRATIVE, sql="SELECT 1",
         result=result_df, figure=figure,
-        dataset_metadata={"Rows": "51,290"}, applied_filters={"Region": "All"},
+        dataset_metadata={"Rows": "500,000"}, applied_filters={"Region": "All"},
     )
     # A .docx is a zip archive; verify it opens and has the main document part.
     with zipfile.ZipFile(io.BytesIO(docx_bytes)) as archive:

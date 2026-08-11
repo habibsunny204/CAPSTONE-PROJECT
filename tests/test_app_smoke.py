@@ -16,7 +16,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 APP_PATH = Path(__file__).resolve().parent.parent / "app" / "app.py"
-REAL_CSV_PATH = Path(__file__).resolve().parent.parent / "data" / "raw" / "global_superstore.csv"
+REAL_CSV_PATH = Path(__file__).resolve().parent.parent / "data" / "raw" / "global_ecommerce_sales.csv"
 
 pytestmark = pytest.mark.skipif(
     not REAL_CSV_PATH.exists(), reason="real dataset not present locally (data/raw/ is gitignored)"
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def app():
-    """Boot the app once for the module -- ingesting 51k rows per test is wasteful."""
+    """Boot the app once for the module -- ingesting 500k rows per test is wasteful."""
     at = AppTest.from_file(str(APP_PATH), default_timeout=180)
     at.run()
     return at
@@ -37,7 +37,7 @@ def test_app_boots_without_exception(app):
 
 
 def test_app_renders_title(app):
-    assert any("Superstore AI Analytics" in t.value for t in app.title)
+    assert any("E-Commerce AI Analytics" in t.value for t in app.title)
 
 
 def test_app_renders_the_expected_tabs(app):
@@ -66,8 +66,8 @@ def test_sidebar_has_the_configured_filters(app):
     )
     assert "Region" in widget_labels
     assert "Category" in widget_labels
-    assert "Segment" in widget_labels
-    assert "Order date range" in widget_labels
+    assert "Payment method" in widget_labels
+    assert "Transaction date range" in widget_labels
 
 
 def test_filters_actually_narrow_the_data(app):
@@ -76,7 +76,7 @@ def test_filters_actually_narrow_the_data(app):
     """
     before = app.sidebar.metric[0].value
 
-    app.sidebar.multiselect(key="filter_region").select("West").run()
+    app.sidebar.multiselect(key="filter_region").select("Asia").run()
 
     after = app.sidebar.metric[0].value
     assert not app.exception, [str(e) for e in app.exception]

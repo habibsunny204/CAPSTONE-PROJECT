@@ -12,7 +12,7 @@ import pytest
 
 from viz import auto_select, charts
 
-TABLE_NAME = "superstore"
+TABLE_NAME = "ecommerce_sales"
 
 
 # ---------------------------------------------------------------------------
@@ -99,18 +99,50 @@ def test_select_chart_never_inspects_column_names():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("chart_name", list(charts.CURATED_CHARTS))
+@pytest.mark.parametrize("chart_name", list(charts.CURATED_BUILDERS))
 def test_curated_charts_build_without_error(chart_name, mini_df, dataset_config):
     """Every curated chart builds a real Plotly figure from the fixture data."""
-    fig = charts.CURATED_CHARTS[chart_name](mini_df, dataset_config)
+    fig = charts.CURATED_BUILDERS[chart_name](mini_df, dataset_config)
     assert isinstance(fig, go.Figure)
 
 
-@pytest.mark.parametrize("chart_name", list(charts.CURATED_CHARTS))
+@pytest.mark.parametrize("chart_name", list(charts.CURATED_BUILDERS))
 def test_curated_charts_have_a_title(chart_name, mini_df, dataset_config):
     """Titles are a spec requirement (C2: 'titles ... on every chart')."""
-    fig = charts.CURATED_CHARTS[chart_name](mini_df, dataset_config)
+    fig = charts.CURATED_BUILDERS[chart_name](mini_df, dataset_config)
     assert fig.layout.title.text
+
+
+def test_curated_chart_menu_titles_come_from_config(dataset_config):
+    """The chart menu is built from each binding's configured title, so a menu label
+    can never drift from the title the chart actually renders.
+    """
+    bindings = dataset_config["charts"]["curated_bindings"]
+    menu = charts.curated_charts(dataset_config)
+    assert set(menu) == {b["title"] for b in bindings.values()}
+    assert len(menu) == len(charts.CURATED_BUILDERS)
+
+
+def test_choropleth_hover_reports_the_region_not_the_country(mini_df, dataset_config):
+    """This dataset has no country column -- the map shades member countries of each
+    region, so the hover text must be bound to the region (customdata), never to the
+    country shape (%{location}), or a reader would see a country-level figure that
+    does not exist in the data.
+    """
+    binding = dataset_config["charts"]["curated_bindings"]["choropleth"]
+    trace = charts.choropleth(mini_df, dataset_config).data[0]
+
+    assert "%{customdata}" in trace.hovertemplate
+    assert "%{location}" not in trace.hovertemplate
+
+    # Every plotted country carries its region, and each region's value is that
+    # region's total -- not a per-country split of it.
+    regions = set(trace.customdata)
+    assert regions == set(mini_df[binding["location_column"]].unique())
+
+    totals = mini_df.groupby(binding["location_column"])[binding["metric"]].sum()
+    for region, country_value in zip(trace.customdata, trace.z):
+        assert country_value == pytest.approx(totals[region])
 
 
 def test_stacked_bar_drilldown_narrows_to_one_primary_value(mini_df, dataset_config):
@@ -127,8 +159,8 @@ def test_stacked_bar_drilldown_narrows_to_one_primary_value(mini_df, dataset_con
 def test_box_plot_scopes_y_axis_to_whisker_range(dataset_config):
     """Regression test: with extreme outliers present, an auto-scaled y-axis
     collapses every box into a flat line. The axis must stay near the quartiles
-    (verified visually against the real dataset, where profit quartiles sit within
-    ~250 of zero while extremes reach +/-8400).
+    (verified visually against the real dataset, where revenue quartiles sit between
+    ~470 and ~1890 while extremes reach nearly 5000).
     """
     binding = dataset_config["charts"]["curated_bindings"]["box_plot"]
     category_col, metric = binding["category_column"], binding["metric"]

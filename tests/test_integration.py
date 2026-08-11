@@ -15,7 +15,7 @@ import pytest
 from llm import client, pipeline
 from llm.memory import MAX_TURNS, ConversationMemory
 
-TABLE_NAME = "superstore"
+TABLE_NAME = "ecommerce_sales"
 
 
 def _fake_generate(*responses):
@@ -34,17 +34,17 @@ def test_answer_question_happy_path(mini_con, dataset_config, monkeypatch):
     """A full Phase 1 -> 2 -> 3 run against the fixture."""
     monkeypatch.setattr(pipeline.client, "generate", _fake_generate(
         json.dumps({
-            "sql": "SELECT region, SUM(sales) AS total_sales FROM superstore GROUP BY region",
-            "reasoning": "group by region, sum sales",
+            "sql": "SELECT region, SUM(total_revenue) AS total_revenue FROM ecommerce_sales GROUP BY region",
+            "reasoning": "group by region, sum total_revenue",
         }),
-        "Sales are led by **West** at 6180, followed by East at 597.",
+        "Revenue is led by **Asia** at 7594, ahead of Europe at 706.",
     ))
 
     result = pipeline.answer_question(mini_con, TABLE_NAME, dataset_config, "What is total revenue by region?")
 
     assert isinstance(result.result, pd.DataFrame)
-    assert set(result.result.columns) == {"region", "total_sales"}
-    assert len(result.result) == 2
+    assert set(result.result.columns) == {"region", "total_revenue"}
+    assert len(result.result) == 3
     assert result.sql.strip().lower().startswith("select")
     assert result.narrative
     assert result.retried is False
@@ -58,7 +58,7 @@ def test_answer_question_retries_once_on_bad_sql_then_succeeds(mini_con, dataset
     """
     monkeypatch.setattr(pipeline.client, "generate", _fake_generate(
         json.dumps({"sql": "SELECT * FROM not_a_real_table", "reasoning": "oops"}),
-        json.dumps({"sql": "SELECT COUNT(*) AS n FROM superstore", "reasoning": "corrected"}),
+        json.dumps({"sql": "SELECT COUNT(*) AS n FROM ecommerce_sales", "reasoning": "corrected"}),
         "There are 16 rows in total.",
     ))
 
@@ -107,17 +107,17 @@ def test_answer_question_uses_conversation_history(mini_con, dataset_config, mon
         captured_prompts.append(user_prompt)
         if len(captured_prompts) == 1:
             return client.LLMResult(
-                text=json.dumps({"sql": "SELECT COUNT(*) AS n FROM superstore", "reasoning": "count rows"}),
+                text=json.dumps({"sql": "SELECT COUNT(*) AS n FROM ecommerce_sales", "reasoning": "count rows"}),
                 provider="gemini", elapsed_ms=1.0,
             )
         return client.LLMResult(text="There are 16 rows.", provider="gemini", elapsed_ms=1.0)
 
     monkeypatch.setattr(pipeline.client, "generate", fake_generate)
 
-    history = [{"question": "What is total sales?", "sql": "SELECT SUM(sales) FROM superstore", "answer": "6777"}]
+    history = [{"question": "What is total revenue?", "sql": "SELECT SUM(total_revenue) FROM ecommerce_sales", "answer": "6777"}]
     pipeline.answer_question(mini_con, TABLE_NAME, dataset_config, "And how many rows is that?", history=history)
 
-    assert "What is total sales?" in captured_prompts[0]
+    assert "What is total revenue?" in captured_prompts[0]
 
 
 # ---------------------------------------------------------------------------
@@ -140,21 +140,21 @@ def test_generate_dataset_overview(mini_con_clean, dataset_config, monkeypatch):
 
 def test_generate_trend_comparison(mini_con_clean, dataset_config, monkeypatch):
     monkeypatch.setattr(pipeline.client, "generate", _fake_generate(
-        "All fixture orders fall in 2013, so there is a single year of data.",
+        "All fixture transactions fall in 2022, so there is a single year of data.",
     ))
 
     insight = pipeline.generate_trend_comparison(mini_con_clean, TABLE_NAME, dataset_config)
 
     assert insight.insight_type == "trend_comparison"
     df = insight.data["aggregation"]
-    assert set(df.columns) == {"year", "sales_sum", "profit_sum"}
+    assert set(df.columns) == {"year", "total_revenue_sum", "quantity_sum"}
     assert insight.narrative
 
 
 def test_generate_anomaly_report(mini_con_clean, dataset_config, monkeypatch):
-    """The fixture's deliberate Sales outlier (row 12, sales=5000) must surface."""
+    """The fixture's deliberate revenue outlier (row 12, total_revenue=5000) must surface."""
     monkeypatch.setattr(pipeline.client, "generate", _fake_generate(
-        "One order has an unusually high sales value compared to the rest.",
+        "One transaction has an unusually high revenue value compared to the rest.",
     ))
 
     insight = pipeline.generate_anomaly_report(mini_con_clean, TABLE_NAME, dataset_config)
