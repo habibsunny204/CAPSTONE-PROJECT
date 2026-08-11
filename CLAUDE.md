@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project overview
 
 This is a Masters-level Deep Learning capstone: a natural-language analytics platform over the
-Global Superstore dataset. A user asks a plain-language question, an LLM turns it into
+Global E-Commerce Sales dataset. A user asks a plain-language question, an LLM turns it into
 executable SQL, a sandboxed DuckDB layer runs it, and the result comes back as a chart plus an
 LLM-written narrative. It also supports preset insight generation, multi-turn conversational
 follow-ups, and PDF/Word export.
@@ -22,32 +22,48 @@ without flagging the deviation explicitly.
 
 ## Current repo state
 
-This repo is **pre-implementation**. As of now it contains only `PROJECT_SPEC.md` and the raw
-dataset — no `app/`, `backend/`, `llm/`, `viz/`, tests, `requirements.txt`, `.env.example`, or
-`PROGRESS.md` exist yet. There is nothing to build/lint/run yet; the commands below are the
-ones the spec defines for once scaffolding lands, not commands that work today.
+All tasks A1–D2 are **implemented and tested** — see `PROGRESS.md` for per-subtask status. The
+full suite passes (`pytest`, 182 tests + 1 opt-in `live_llm` test).
 
-Build in dependency order: **A before B** (B needs the schema), **B before C's AI-driven chart
+The project was originally built against Global Superstore and has since been **retargeted to
+Global E-Commerce Sales**. `PROJECT_SPEC.md` still describes the Superstore dataset in its prose
+examples; the spec remains authoritative on architecture, tasks, and security, but this file is
+the current truth on the dataset itself.
+
+Build order for any new work: **A before B** (B needs the schema), **B before C's AI-driven chart
 selection** (C needs a result DataFrame to shape-detect on), **D last** (it reuses A2 and A3).
 
 ## Dataset reality check (verified directly against the raw CSV, not just the spec's prose)
 
-- The raw file currently lives at repo root as `superstore.csv` (51,291 rows), not yet at the
-  spec's expected `data/raw/global_superstore.csv` — move/reference it there during Task A1
-  ingestion.
-- Actual header (dot-separated, not the spaced names used in the spec's prose examples):
-  `Category, City, Country, Customer.ID, Customer.Name, Discount, Market, 记录数, Order.Date,
-  Order.ID, Order.Priority, Product.ID, Product.Name, Profit, Quantity, Region, Row.ID, Sales,
-  Segment, Ship.Date, Ship.Mode, Shipping.Cost, State, Sub.Category, Year, Market2, weeknum`.
-  Ingestion needs to normalize these to whatever naming convention the schema JSON uses, and the
-  synonym dictionary in `configs/dataset_config.yaml` must map from the *actual* raw names.
-- **PII confirmed present**: `Customer.Name` and `Customer.ID` are real columns in this file.
-  Per the spec's Section 2 hard gate, these must be dropped or hashed during Task A1 ingestion —
-  before any schema JSON derived from this data ever reaches an LLM prompt. Treat this as
-  blocking, not a later cleanup step.
-- Three columns aren't mentioned anywhere in the spec's column list: `记录数` (a non-English
-  "record count" column), `Market2`, and `weeknum`. Decide deliberately what to do with them
-  during Task A3 data-quality profiling rather than silently dropping or silently keeping them.
+- The raw file lives at `data/raw/global_ecommerce_sales.csv` (500,000 rows, ~44 MB, gitignored).
+- Actual header: `Transaction Date, Customer ID, Region, Product, Category, Price, Quantity,
+  Discount (%), Total Revenue, Payment Method`. The rename map in `configs/dataset_config.yaml`
+  normalizes these to snake_case, and the synonym dictionary maps informal phrases to those
+  normalized names.
+- **PII confirmed present**: `Customer ID` (98,348 distinct, `CUST_nnnnn`). Hashed to
+  `customer_id_hash` during Task A1 ingestion, before any schema JSON reaches an LLM prompt.
+  There is no customer-name column, so `pii.drop_columns` is configured but empty.
+- **`Discount (%)` is a percentage on a 0–30 scale, not a 0–1 fraction.** This is the single
+  most dangerous thing to get wrong: the previous dataset stored discount as a fraction, so
+  "more than 20% discount" is now `discount_pct > 20`, not `> 0.2`. The column is deliberately
+  renamed with a `_pct` suffix, a few-shot example calls the unit out explicitly, and
+  `filtered_agg_1` in the benchmark exists to catch a regression (the right answer averages
+  1133.06 over 166,032 rows; the fraction reading gives 1280.80 over 496,574).
+- Data is clean on arrival: zero nulls, zero duplicate rows, and `Total Revenue` is exactly
+  `Price × Quantity × (1 − Discount/100)`. `drop_after_profiling` is therefore an empty list —
+  a recorded decision, not an oversight. The `tests/fixtures/` CSV is deliberately dirtier than
+  production so the cleaning and profiling paths are still exercised.
+- **Three structural gaps versus the old dataset**, each resolved deliberately:
+  - *No profit column.* Charts are built on the four real measures (revenue, price, quantity,
+    discount). Do **not** synthesize a profit column — fabricated data is indefensible in Q&A.
+  - *No country column.* `Region` is six continents. The choropleth expands each region to its
+    member countries (`configs/region_countries.yaml`, ISO-3) and binds hover text to the region,
+    never the country shape.
+  - *No Row.ID and no Year column.* `dataset.id_column` is omitted (consumers read it with
+    `.get()`), and `year`/`month` are derived from `transaction_date` by A3's `derive_date_parts`
+    step.
+- `payment_method` is deliberately excluded from `categorical_casing_columns`: the cleaner
+  title-cases values, which would mangle `PayPal` into `Paypal`. There is a test asserting this.
 
 ## Non-negotiable rules
 
@@ -98,23 +114,27 @@ failure message. Don't retry indefinitely.
 
 ## Generic vs. dataset-specific boundary
 
-The project targets Global Superstore only, but the specific/generic split must stay deliberate:
+The project targets Global E-Commerce Sales only, but the specific/generic split must stay
+deliberate — it is what made retargeting from the previous dataset a mostly config-only change:
 
-- **Must stay generic** (no Superstore column names as literals): `backend/` (ingestion, schema
+- **Must stay generic** (no dataset column names as literals): `backend/` (ingestion, schema
   introspection, query engine, quality profiling), `llm/pipeline.py`, `llm/sandbox.py`,
   `viz/auto_select.py` (keys off result *shape* — datetime+numeric, categorical+numeric — never
   off column identity).
-- **Allowed to be dataset-specific, but centralized**: the synonym dictionary and curated-chart
-  column bindings belong in one place, `configs/dataset_config.yaml`. Everything else reads from
-  that file rather than hardcoding literal column-name strings.
+- **Allowed to be dataset-specific, but centralized**: the synonym dictionary, curated-chart
+  column bindings, sidebar filters, and dashboard chrome (title, KPI tiles, example questions)
+  belong in one place, `configs/dataset_config.yaml` — plus `configs/region_countries.yaml`,
+  which the choropleth alone reads. Everything else reads from those files rather than
+  hardcoding literal column-name strings.
 
-## Planned repo layout
+## Repo layout
 
-Not yet built — this is the target structure from spec Section 5, to be filled in task order:
+Built out per spec Section 5:
 
 ```
-configs/dataset_config.yaml   # synonym map, dataset path, curated-chart column bindings
-data/raw/                     # global_superstore.csv (gitignored)
+configs/dataset_config.yaml   # synonym map, dataset path, curated-chart bindings, app chrome
+configs/region_countries.yaml # region -> ISO-3 country codes (choropleth only)
+data/raw/                     # global_ecommerce_sales.csv (gitignored)
 app/app.py                    # Streamlit entrypoint
 backend/                      # ingest.py, schema.py, query_engine.py, quality.py, benchmark_perf.py
 llm/                          # client.py (Gemini->Groq failover), prompts.py, pipeline.py, sandbox.py, memory.py
@@ -153,17 +173,16 @@ sandbox: AST-walk generated code, reject `Import`/`ImportFrom`, reject `eval`/`e
 ## Working agreement
 
 - Maintain `PROGRESS.md` at repo root as a running checklist of subtasks (A1, A2, ..., D2) with
-  status (`not started` / `in progress` / `done + tested`). It doesn't exist yet — create it with
-  the first subtask, and update it at the end of every session.
+  status (`not started` / `in progress` / `done + tested`). Update it at the end of every session.
 - `.env` is created locally from `.env.example` and never committed — verify `.gitignore`
   includes it before the first commit.
 - Keep deployment-agnostic: no hardcoded deployment target (Streamlit Community Cloud vs.
   Hugging Face Spaces, etc.) — not decided yet.
 
-## Commands (planned — not runnable until the corresponding scaffolding exists)
+## Commands
 
 - Run the app: `streamlit run app/app.py`
 - Run all tests: `pytest`
 - Run a single test: `pytest tests/test_backend.py::test_name`
-- Run the accuracy benchmark: `python eval/run_benchmark.py` (against `eval/benchmark_questions.json`)
-- Run the perf benchmark: `python backend/benchmark_perf.py`
+- Run the accuracy benchmark: `python -m eval.run_benchmark` (against `eval/benchmark_questions.json`)
+- Run the perf benchmark: `python -m backend.benchmark_perf` (must be run as a module, not by path)

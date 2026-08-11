@@ -1,6 +1,6 @@
 # AI-Powered Data Analytics & Visualization Platform
 
-A natural-language analytics platform over the Global Superstore dataset, built for a
+A natural-language analytics platform over the Global E-Commerce Sales dataset, built for a
 Masters-level Deep Learning capstone. You ask a question in plain English; an LLM writes
 SQL; a sandbox validates and runs it against a read-only DuckDB connection; the result
 comes back as a chart plus a written answer.
@@ -39,14 +39,24 @@ pip install -r requirements.txt
 
 ### Dataset
 
-The raw CSV is gitignored (it's ~15 MB), so it isn't in this repo. Place it at:
+The raw CSV is gitignored (it's ~44 MB), so it isn't in this repo. Place it at:
 
 ```
-data/raw/global_superstore.csv
+data/raw/global_ecommerce_sales.csv
 ```
 
-Ingestion normalizes the raw dot-separated headers (`Order.Date`, `Customer.ID`, …) to
+500,000 transaction rows spanning 2022-01-01 to 2024-01-01, across 10 columns. Ingestion
+normalizes the raw headers (`Transaction Date`, `Customer ID`, `Discount (%)`, …) to
 snake_case via the rename map in `configs/dataset_config.yaml`.
+
+Two notes on the data that matter when reading results:
+
+- **`discount_pct` is a percentage on a 0–30 scale, not a 0–1 fraction.** The `_pct` suffix
+  is deliberate — it carries the unit into the schema the LLM sees, so "more than 20%
+  discount" becomes `discount_pct > 20`. One benchmark question exists purely to check this.
+- **There is no profit column and no country column.** Analysis is built on the four real
+  measures (revenue, price, quantity, discount), and geography stops at six continent-level
+  regions — see the choropleth note under *Layout*.
 
 ### Environment variables
 
@@ -73,7 +83,7 @@ streamlit run app/app.py
 
 Then open http://localhost:8501. The dashboard has four tabs:
 
-- **Overview** — headline metrics, revenue/profit over time, a world choropleth, and the
+- **Overview** — headline metrics, revenue/units over time, a world choropleth, and the
   data-quality summary
 - **Exploration** — the remaining curated charts, with drill-down and per-chart PNG/SVG export
 - **AI Assistant** — the chat interface, preset insights, and PDF/Word export per answer
@@ -83,15 +93,16 @@ Sidebar filters apply across the Overview and Exploration tabs and persist acros
 
 ## Privacy note
 
-`Customer.Name` is dropped outright at ingestion and `Customer.ID` is replaced by a salted
-SHA-256 hash — **before** the DuckDB table is created, so raw PII is never queryable and
-never reaches an LLM prompt. Hiding a column from the schema JSON alone would not be
+`Customer ID` is replaced by a salted SHA-256 hash — **before** the DuckDB table is
+created, so raw PII is never queryable and never reaches an LLM prompt. (This dataset has
+no customer-name column; the drop list is configured but empty.) Hiding a column from the schema JSON alone would not be
 enough: the sandbox validates SQL *structure*, not a column allowlist, so a hallucinated
 `SELECT` on a raw PII column would still succeed if the column were physically present.
 
 The hash is a privacy control against accidental exposure and re-identification against
-public copies of this well-known dataset — not a cryptographic guarantee (equal inputs
-hash identically, which is required to preserve unique-customer counts).
+public copies of this dataset — not a cryptographic guarantee (equal inputs hash
+identically, which is required to preserve unique-customer counts: 500,000 transactions
+come from 98,348 distinct customers, and that figure has to survive hashing).
 
 ## Testing
 
@@ -128,13 +139,14 @@ Both write timestamped evidence to `eval/results/`. The most recent runs:
 - **Accuracy**: 15/15 (100%) on the fixed benchmark set, spanning simple aggregation,
   filtered aggregation, synonym resolution, multi-condition filters, and out-of-scope
   questions that must be declined rather than hallucinated.
-- **Performance**: filtered aggregation on all 51,290 rows runs in **2.7–6.7 ms median**
-  across three scenarios — roughly 75–180× under the 500 ms requirement.
+- **Performance**: filtered aggregation on all 500,000 rows runs in **7.1–13.5 ms median**
+  across three scenarios — roughly 37–70× under the 500 ms requirement.
 
 ## Layout
 
 ```
 configs/dataset_config.yaml   # the ONLY place dataset-specific detail lives
+configs/region_countries.yaml # region -> ISO-3 country codes, for the choropleth only
 backend/                      # ingestion, schema, query engine, quality, perf benchmark
 llm/                          # client (failover), prompts, pipeline, sandbox, memory
 viz/                          # chart builders, shape-based auto-selection
@@ -145,7 +157,17 @@ app/app.py                    # Streamlit entrypoint
 ```
 
 `backend/`, `llm/pipeline.py`, `llm/sandbox.py`, and `viz/auto_select.py` contain **no
-Superstore column names** — they're driven by the schema and by
+dataset column names** — they're driven by the schema and by
 `configs/dataset_config.yaml`. `viz/auto_select.py` in particular keys off the result's
 *shape* (datetime+numeric, categorical+numeric, …), never off column identity, which is
 asserted by a test that feeds identical shapes under different column names.
+
+### A note on the choropleth
+
+This dataset's geography stops at continent level — `region` holds six values and there is
+no country column. Rather than drop the map, each region is expanded to its member
+countries (`configs/region_countries.yaml`, ISO-3 codes) and every country in a region is
+shaded with that region's total. The hover text is bound to the **region** name and total,
+never to the country shape, so the chart cannot be misread as country-level data it does
+not have — [`tests/test_viz.py`](tests/test_viz.py) asserts that the hover template never
+references `%{location}`.

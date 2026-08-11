@@ -8,10 +8,10 @@ end of every session — a fresh session has no memory of prior ones beyond what
 
 | ID | Subtask | Status | Notes |
 |----|---------|--------|-------|
-| A1 | Ingestion & schema (`backend/ingest.py`, `backend/schema.py`) | done + tested | Customer.ID PII decision resolved: hashed (sha256+salt) to `customer_id_hash`, salt from `PII_HASH_SALT` env var. `Customer.Name` dropped entirely. Full raw CSV moved to `data/raw/global_superstore.csv`. 9 tests passing in `tests/test_backend.py`. |
+| A1 | Ingestion & schema (`backend/ingest.py`, `backend/schema.py`) | done + tested | PII: `Customer ID` hashed (sha256+salt) to `customer_id_hash`, salt from `PII_HASH_SALT` env var; no customer-name column exists in this dataset so `drop_columns` is empty. Raw CSV at `data/raw/global_ecommerce_sales.csv` (500,000 rows). Hash path is presence-guarded (a configured PII column missing from the CSV is skipped, not fatal). 13 tests passing in `tests/test_backend.py`. |
 | A2 | Query engine (`backend/query_engine.py`: `groupby_agg`, `filtered_query`) | done + tested | `groupby_agg` gained an optional `filters` param beyond the spec's literal signature so "filtered aggregation" is one reusable call (flagged deviation, see plan doc). Both functions also take an explicit `table_name` param, matching `schema.get_schema`'s pattern. 12 new tests passing. |
-| A3 | Data quality (`backend/quality.py`: profiling, cleaning, IQR outliers) | done + tested | `record_count` dropped (constant, zero info); `market_group`/`week_num` kept (documented as derived). Casing standardization scope was narrowed after testing against the real 51K-row dataset found naive `str.title()` mangling real data: abbreviations (`market`/`market_group`/`region` contain "US"/"EU"/"APAC"/"EMEA" -> "Us"/"Eu"/"Apac"/"Emea") and geographic proper nouns (`country`/`state`/`city`, e.g. "Rio de Janeiro" -> "Rio De Janeiro", "Cote d'Ivoire" -> "Cote D'Ivoire"). Casing standardization now only applies to `category`/`segment`/`ship_mode`/`order_priority`/`sub_category` (small closed-vocabulary business categories), which real-data verification confirms is a no-op on production data today. 8 new tests passing. |
-| A4 | Performance benchmark (`backend/benchmark_perf.py`, <500ms evidence) | done + tested | 3 scenarios x 30 iterations against the full 51,290-row dataset: medians 2.7-6.7ms, ~75-180x under the 500ms bar. Evidence logged to `eval/results/perf_benchmark_20260810_221003.json`. 1 new test (skipped if `data/raw/` absent). |
+| A3 | Data quality (`backend/quality.py`: profiling, cleaning, IQR outliers) | done + tested | Cleaning is config-driven: parse dates, derive calendar parts, standardize casing, drop degenerate columns. `drop_after_profiling` is empty for this dataset -- unlike the previous one it carries no constant-value artifact column, recorded as a decision rather than left implicit. `derive_date_parts` was added to synthesize `year`/`month` from `transaction_date`, since this dataset has no Year column and the Trend Analysis preset needs a discrete time dimension. Casing standardization applies only to `category`/`region`; `payment_method` is deliberately excluded because `str.title()` mangles "PayPal" -> "Paypal", and `product` is excluded as a 10,000-value synthetic identifier. A test asserts the PayPal case directly. |
+| A4 | Performance benchmark (`backend/benchmark_perf.py`, <500ms evidence) | done + tested | 3 scenarios x 30 iterations against the full 500,000-row dataset: medians 7.1-13.5ms, ~37-70x under the 500ms bar. Evidence logged to `eval/results/perf_benchmark_20260811_195829.json`. Run with `python -m backend.benchmark_perf`. |
 
 ## Task B — LLM integration (2.5 marks, heaviest component)
 
@@ -27,7 +27,7 @@ end of every session — a fresh session has no memory of prior ones beyond what
 
 | ID | Subtask | Status | Notes |
 |----|---------|--------|-------|
-| C1 | Architecture (`st.tabs()`, sidebar filters, session state) | done + tested | `app/app.py`: 3 tabs (Overview / Exploration / AI Assistant), config-driven sidebar filters (date range + 3 multiselects), `st.session_state` for filters/memory/answers, `@st.cache_resource` so the 51k-row ingest runs once per process rather than per rerun. 8 `AppTest` smoke tests. |
+| C1 | Architecture (`st.tabs()`, sidebar filters, session state) | done + tested | `app/app.py`: 3 tabs (Overview / Exploration / AI Assistant), config-driven sidebar filters (date range + 3 multiselects), `st.session_state` for filters/memory/answers, `@st.cache_resource` so the 500k-row ingest runs once per process rather than per rerun. 8 `AppTest` smoke tests. |
 | C2 | Visualization suite (>=6 chart types) | done + tested | All 7 built in `viz/charts.py` (time series, choropleth, correlation heatmap, box plot, sunburst, scatter+regression, stacked bar with drill-down). Bindings + a CVD-validated palette live in `configs/dataset_config.yaml`. |
 | C3 | AI-driven visualization (shape -> chart-type auto-select) | done + tested | `viz/auto_select.py` keys off result shape only (proven by a test that feeds identical shapes under different column names); UI dropdown allows manual override; each AI chart carries a caption explaining the selection. |
 | C4 | Export (PDF, Word, PNG/SVG) | done + tested | `export/pdf_export.py` + `export/docx_export.py` (metadata, filters, narrative, chart image, result table, SQL), plus per-chart PNG/SVG. All generated on demand behind a "Prepare" button -- see the perf note in the session log. |
@@ -128,3 +128,60 @@ end of every session — a fresh session has no memory of prior ones beyond what
   To actually get the number: run on a day with fresh quota using
   `--repeats 1`, spread configurations across days, use a trimmed question set, or
   upgrade a provider tier.
+
+## Dataset migration: Global Superstore -> Global E-Commerce Sales
+
+- 2026-08-11: Retargeted the whole platform from Global Superstore (51,291 rows, 27
+  columns) to Global E-Commerce Sales (500,000 rows, 10 columns). The generic/specific
+  boundary held: `backend/`, all of `llm/`, `viz/auto_select.py`, `features/`, and
+  `export/` needed **no column-name changes at all** -- only `configs/`, the chart
+  builders' labels, the app's chrome, the eval ground truths, and the test fixtures.
+  Full suite green (182 tests), perf re-verified at 10x the row count.
+
+  Four structural gaps in the new data drove real decisions rather than mechanical
+  renames:
+
+  1. **No profit column.** Charts were rebuilt on the four real measures (revenue,
+     price, quantity, discount). A synthetic profit column was deliberately NOT
+     invented -- fabricated data would not survive Q&A.
+  2. **No country column** (`region` is six continents). Rather than drop the
+     choropleth and fall to the spec's bare minimum of 6 charts, the map now expands
+     each region to its member countries via `configs/region_countries.yaml` (ISO-3
+     codes) and shades them with the region total. Hover text binds to the region, not
+     the country shape, so it cannot be misread as country-level data; a test asserts
+     the hover template never references `%{location}`. ISO-3 was chosen over country
+     names because Plotly deprecates the name lookup and names are ambiguous across
+     Natural Earth vintages.
+  3. **No Row.ID.** `dataset.id_column` is now omitted entirely; consumers already read
+     it via `.get()`. With no surrogate key and 0 duplicates in the raw file, full-row
+     duplicate detection is meaningful as-is.
+  4. **No Year column.** Added a generic, config-driven `derive_date_parts` step to
+     `quality.py` (allowlisted date parts, quoted identifiers -- config is not an
+     injection vector).
+
+  Three genuine bugs were found and fixed in passing, all latent on the old dataset:
+  - `ingest.py` hashed PII columns unguarded, so any CSV missing a configured PII
+    column raised `KeyError`. Now presence-guarded like the drop path, and the salt is
+    only demanded when there is something to hash. Regression test added.
+  - `app.py` guarded `date_range` filters on column *existence* but not *dtype*, so a
+    date filter on a non-datetime column raised `AttributeError`.
+  - `viz/charts.py` hardcoded `locationmode="country names"`, which config could not
+    override -- the structural coupling that would have silently produced an empty map.
+
+  One perf fix: `box_plot` passed raw y-values to Plotly, shipping ~500k floats to the
+  browser per render at this dataset's scale. It now precomputes quartiles and fences
+  in pandas and passes five numbers per box; the drawn result is identical because
+  `boxpoints=False` meant individual points were never rendered.
+
+  **The highest-risk change is the discount unit.** Superstore stored discount as a
+  0-1 fraction; this dataset stores it as a 0-30 percentage. The column is renamed
+  `discount_pct` to carry the unit into the schema the LLM sees, a few-shot example
+  states it explicitly, and benchmark question `filtered_agg_1` exists to catch a
+  regression: the correct reading (`discount_pct > 20`) averages 1133.06 over 166,032
+  rows, while the fraction reading (`> 0.2`) averages 1280.80 over 496,574 -- far
+  enough apart that scoring cannot confuse them.
+
+  All 15 benchmark ground truths were recomputed against the cleaned table with DuckDB
+  and verified to match their `reference_sql`, preserving the original category mix.
+  **The accuracy benchmark has not been re-run live against the new questions** -- that
+  needs API quota, same constraint as the ablation sweep below.
