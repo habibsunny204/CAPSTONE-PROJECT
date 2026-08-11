@@ -278,3 +278,82 @@ def test_resolve_override_finds_axes_the_auto_selection_left_empty():
     assert override is not None
     assert override.x in df.columns and override.y in df.columns
     assert pd.api.types.is_numeric_dtype(df[override.y])
+
+
+# ---------------------------------------------------------------------------
+# C2 -- animated chart
+# ---------------------------------------------------------------------------
+
+
+def test_animated_bar_has_frames_and_a_slider(mini_df, dataset_config):
+    """C2's "animated or transitioning chart (slider-driven time animation)" needs
+    both halves: real animation frames, and a slider to drive them.
+    """
+    fig = charts.animated_bar(mini_df, dataset_config)
+
+    assert len(fig.frames) > 1, "an animation needs more than one frame"
+    assert len(fig.layout.sliders) == 1
+    assert len(fig.layout.sliders[0].steps) == len(fig.frames)
+    labels = [b.label for b in fig.layout.updatemenus[0].buttons]
+    assert "Play" in labels and "Pause" in labels
+
+
+def test_animated_bar_pins_the_y_axis_across_frames(mini_df, dataset_config):
+    """Plotly rescales the y-axis per frame by default, which makes every period look
+    equally tall and hides the growth the animation exists to show. The range must be
+    fixed, and it must actually contain the largest value in any frame.
+    """
+    fig = charts.animated_bar(mini_df, dataset_config)
+
+    low, high = fig.layout.yaxis.range
+    assert low == 0
+    tallest = max(max(frame.data[0].y) for frame in fig.frames)
+    assert high >= tallest
+
+
+def test_animated_bar_keeps_every_category_in_every_frame(mini_df, dataset_config):
+    """A category missing from one period would vanish mid-animation and the other
+    bars would slide across to close the gap -- movement that isn't in the data. The
+    grid is completed with zeros so the axis is stable.
+    """
+    fig = charts.animated_bar(mini_df, dataset_config)
+
+    category_sets = {tuple(frame.data[0].x) for frame in fig.frames}
+    assert len(category_sets) == 1, "categories must not change between frames"
+    assert len({len(frame.data[0].y) for frame in fig.frames}) == 1
+
+
+def test_animated_bar_preaggregates_rather_than_shipping_raw_rows(mini_df, dataset_config):
+    """The perf invariant, as a test.
+
+    An animation_frame over the raw frame sends every source row to the browser for
+    every frame. Each frame should carry one value per category -- a few hundred
+    numbers in total, not len(df) * n_frames.
+    """
+    fig = charts.animated_bar(mini_df, dataset_config)
+
+    dimension = dataset_config["charts"]["curated_bindings"]["animated_bar"]["dimension"]
+    n_categories = mini_df[dimension].nunique()
+    for frame in fig.frames:
+        assert len(frame.data[0].y) == n_categories
+
+    total_points = sum(len(frame.data[0].y) for frame in fig.frames)
+    assert total_points == n_categories * len(fig.frames)
+    assert total_points < len(mini_df) * len(fig.frames)
+
+
+def test_animated_bar_frame_values_match_the_underlying_totals(mini_df, dataset_config):
+    """The animation must show the real numbers -- assert one frame against a
+    hand-computed groupby rather than trusting the builder's own arithmetic.
+    """
+    binding = dataset_config["charts"]["curated_bindings"]["animated_bar"]
+    date_col, dimension = binding["date_column"], binding["dimension"]
+    metric, period = binding["metric"], binding.get("period", "M")
+
+    fig = charts.animated_bar(mini_df, dataset_config)
+    frame = fig.frames[0]
+
+    expected = (mini_df[mini_df[date_col].dt.to_period(period).astype(str) == frame.name]
+                .groupby(dimension)[metric].sum())
+    for category, value in zip(frame.data[0].x, frame.data[0].y):
+        assert value == pytest.approx(expected.get(category, 0.0))

@@ -1,4 +1,4 @@
-"""Plotly chart builders: the 7 curated dashboard charts (Task C2) plus the
+"""Plotly chart builders: the 8 curated dashboard charts (Task C2) plus the
 renderer for AI-selected charts (Task C3).
 
 Column bindings come from configs/dataset_config.yaml's `charts.curated_bindings`
@@ -126,6 +126,99 @@ def time_series(df: pd.DataFrame, config: dict[str, Any], freq: str = "ME") -> g
     for i, metric in enumerate(metrics):
         fig.update_yaxes(title_text=_prettify(metric), secondary_y=(i == 1))
     fig.update_layout(hovermode="x unified")
+    return fig
+
+
+def animated_bar(df: pd.DataFrame, config: dict[str, Any]) -> go.Figure:
+    """Slider-driven animated bar chart: one metric by one dimension, stepping
+    through time (Task C2's "animated or transitioning chart").
+
+    Three things here are deliberate, and each of them is a bug if left out:
+
+    - **Pre-aggregated in pandas.** Handing Plotly the raw frame with an
+      `animation_frame` ships every one of the 500k rows to the browser for every
+      frame. Grouping to (period x dimension) first leaves a few hundred rows total.
+      This is the same fix box_plot needed for the same reason.
+    - **Every (period, dimension) pair is filled, with 0 for the missing ones.**
+      Plotly builds its frames from whatever rows exist, so a dimension absent in one
+      period would vanish and reappear mid-animation, and the remaining bars would
+      slide sideways to close the gap -- which reads as movement in the data that
+      didn't happen.
+    - **The y-axis range is pinned across frames.** Plotly rescales per frame
+      otherwise, so every period looks equally tall and the growth the animation
+      exists to show disappears.
+    """
+    binding = _bindings(config, "animated_bar")
+    date_col, dimension = binding["date_column"], binding["dimension"]
+    metric, period = binding["metric"], binding.get("period", "M")
+
+    frame = df[[date_col, dimension, metric]].copy()
+    # Group on the Period values and stringify the ~25 aggregated labels afterwards,
+    # not the 500k source rows: .astype(str) before the groupby costs ~220ms of the
+    # ~300ms, on every rerun of the tab, for an identical result.
+    frame["_period"] = frame[date_col].dt.to_period(period)
+
+    totals = frame.groupby(["_period", dimension], as_index=False, observed=True)[metric].sum()
+    totals["_period"] = totals["_period"].astype(str)
+
+    # Complete grid, so no category can pop in or out between frames.
+    periods = sorted(totals["_period"].unique())
+    categories = sorted(totals[dimension].unique())
+    grid = pd.MultiIndex.from_product([periods, categories], names=["_period", dimension])
+    totals = (totals.set_index(["_period", dimension])
+                    .reindex(grid, fill_value=0)
+                    .reset_index())
+
+    colors = _colors(config)
+    bar_colors = [colors[i % len(colors)] for i in range(len(categories))]
+    hover = f"%{{x}}<br>{_prettify(metric)}: %{{y:,.0f}}<extra></extra>"
+
+    def _bar(period_label: str) -> go.Bar:
+        """The single bar trace for one frame, categories in fixed order."""
+        values = totals.loc[totals["_period"] == period_label, metric]
+        return go.Bar(x=categories, y=values.tolist(), marker=dict(color=bar_colors),
+                      hovertemplate=hover)
+
+    # Built with graph_objects rather than px.bar(animation_frame=...). Plotly Express
+    # spent ~1.1s assembling these frames from an already-aggregated 200-row table --
+    # a fixed cost, unrelated to data volume, paid on every rerun of this tab. Frames
+    # are cheap to construct directly, and the rest of this module uses go.* anyway.
+    fig = go.Figure(
+        data=[_bar(periods[0])],
+        frames=[go.Frame(data=[_bar(p)], name=p) for p in periods],
+    )
+
+    y_max = totals[metric].max()
+    fig.update_yaxes(range=[0, y_max * 1.1 if y_max else 1])
+
+    transition = dict(duration=250, easing="cubic-in-out")
+    fig.update_layout(
+        showlegend=False,
+        updatemenus=[dict(
+            type="buttons", direction="left", showactive=False,
+            x=0.0, y=-0.28, xanchor="left", yanchor="top",
+            buttons=[
+                dict(label="Play", method="animate", args=[None, dict(
+                    frame=dict(duration=600, redraw=True), fromcurrent=True,
+                    transition=transition)]),
+                dict(label="Pause", method="animate", args=[[None], dict(
+                    frame=dict(duration=0, redraw=False), mode="immediate")]),
+            ],
+        )],
+        sliders=[dict(
+            active=0, x=0.12, y=-0.22, len=0.88,
+            currentvalue=dict(prefix=f"{_prettify(date_col)}: "),
+            steps=[dict(label=p, method="animate", args=[[p], dict(
+                frame=dict(duration=300, redraw=True), mode="immediate",
+                transition=transition)]) for p in periods],
+        )],
+    )
+
+    fig = apply_theme(fig, config, binding["title"],
+                      x_title=_prettify(dimension), y_title=_prettify(metric))
+    # The play button and slider sit below the plot, so the default bottom margin
+    # would clip them into the x-axis title.
+    fig.update_layout(margin=dict(l=60, r=30, t=60, b=140))
     return fig
 
 
@@ -350,6 +443,7 @@ CURATED_BUILDERS = {
     "sunburst": sunburst,
     "scatter_regression": scatter_regression,
     "stacked_bar": stacked_bar,
+    "animated_bar": animated_bar,
 }
 
 

@@ -315,6 +315,12 @@ def render_exploration_tab(data: dict[str, Any], filtered: pd.DataFrame) -> None
     _chart_with_export(charts.correlation_heatmap(filtered, config), _stem("correlation_heatmap"))
     _chart_with_export(charts.sunburst(filtered, config), _stem("sunburst"))
 
+    _chart_with_export(charts.animated_bar(filtered, config), _stem("animated_bar"))
+    st.caption(
+        "Press play, or drag the slider, to step through the months. Image export "
+        "captures the frame currently shown."
+    )
+
     binding = bindings["stacked_bar"]
     primary = binding["primary_dim"]
     st.subheader(binding["title"])

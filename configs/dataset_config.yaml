@@ -241,6 +241,15 @@ charts:
       secondary_dim: "category"
       metric: "total_revenue"
       title: "Revenue by Region and Category"
+    animated_bar:
+      # C2's slider-driven animated chart. `period` is a pandas offset alias passed to
+      # Series.dt.to_period -- "M" over this dataset's 2022-01..2024-01 span gives 25
+      # frames, enough to read as motion. "Q" or "Y" if that is too fine.
+      date_column: "transaction_date"
+      dimension: "category"
+      metric: "total_revenue"
+      period: "M"
+      title: "Revenue by Category, Month by Month"
 
 # Task C1: which columns become global sidebar filters, and how each is rendered.
 # Kept here (not in app.py) for the same reason as everything else in this file.
