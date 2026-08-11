@@ -4,8 +4,8 @@ prompt in Task B (Task A1).
 Fully generic: iterates over whatever columns the target table currently has via
 DuckDB's own introspection (`PRAGMA table_info`), never a hardcoded column list. This
 means the output naturally reflects post-cleaning state once backend/quality.py's
-clean() has run (parsed date dtypes, record_count dropped) — that cleaned state is
-what Task B's prompts actually see.
+clean() has run (parsed date dtypes, derived calendar-part columns present, any
+degenerate columns dropped) — that cleaned state is what Task B's prompts actually see.
 
 Note on the PII gate: this module only controls what appears in the *JSON contract*.
 The actual hard gate — raw PII never being queryable at all — is enforced earlier, in

@@ -3,7 +3,7 @@ with results logged as evidence to eval/results/ (Task A4).
 
 Runs groupby_agg(..., filters=[...]) scenarios declared in configs/dataset_config.yaml
 (benchmark.scenarios) against the full, cleaned, real dataset -- config-driven so this
-file contains no Superstore column-name literals, matching every other module in
+file contains no dataset column-name literals, matching every other module in
 backend/. Each scenario gets a few discarded warmup calls, then N timed iterations;
 median/p95/etc. are computed from the timed runs and checked against the 500ms bar.
 """

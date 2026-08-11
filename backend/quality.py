@@ -31,6 +31,14 @@ _NUMERIC_DTYPE_PREFIXES = (
     "FLOAT", "DOUBLE", "DECIMAL", "REAL",
 )
 
+# Date parts clean() will extract via `derive_date_parts`. An allowlist rather than a
+# passthrough: the part name is interpolated into SQL (DuckDB's date_part takes it as a
+# string literal, not a bindable parameter), so restricting it to these known-safe
+# tokens keeps config from being an injection vector.
+_ALLOWED_DATE_PARTS = frozenset({
+    "year", "quarter", "month", "week", "day", "dayofweek", "dayofyear", "hour",
+})
+
 
 def _q(name: str) -> str:
     """Double-quote a DuckDB identifier, escaping embedded quotes."""
@@ -116,10 +124,10 @@ def clean(
     config: dict[str, Any],
 ) -> dict[str, Any]:
     """Apply real cleaning steps to `table_name` in place, driven by `config`'s
-    `quality` section: (1) parse date columns from string to TIMESTAMP, (2)
-    standardize categorical casing (trim + title-case) on configured low-cardinality
-    string columns, (3) drop columns flagged as degenerate during profiling. Returns
-    a report of what changed.
+    `quality` section: (1) parse date columns from string to TIMESTAMP, (2) derive
+    calendar-part columns from those dates, (3) standardize categorical casing (trim +
+    title-case) on configured low-cardinality string columns, (4) drop columns flagged
+    as degenerate during profiling. Returns a report of what changed.
     """
     quality_cfg = config["quality"]
     total_rows = con.execute(f"SELECT COUNT(*) FROM {_q(table_name)}").fetchone()[0]
@@ -138,7 +146,42 @@ def clean(
     if parsed_columns:
         steps.append({"name": "parse_dates", "columns": parsed_columns, "rows_affected": total_rows})
 
-    # 2. Standardize categorical casing (trim + title-case). DuckDB has no built-in
+    # 2. Derive calendar-part columns (year, month, ...) from parsed date columns.
+    # Config-driven and generic: the source column, the parts extracted, and the
+    # resulting column names all come from `derive_date_parts`, so this adds no
+    # dataset-specific literal to this module. Runs after step 1 so the source column
+    # is already a TIMESTAMP. Only DuckDB date-part names are accepted, and the result
+    # name is quoted, so nothing here is injectable from config.
+    existing = set(_table_columns(con, table_name))
+    derived: list[str] = []
+    for source_col, parts in (quality_cfg.get("derive_date_parts", {}) or {}).items():
+        if source_col not in existing:
+            continue
+        for part, new_col in parts.items():
+            if part not in _ALLOWED_DATE_PARTS:
+                raise ValueError(
+                    f"Unsupported date part {part!r} in derive_date_parts; "
+                    f"allowed: {sorted(_ALLOWED_DATE_PARTS)}"
+                )
+            if new_col in existing:
+                continue
+            con.execute(
+                f"ALTER TABLE {_q(table_name)} ADD COLUMN {_q(new_col)} BIGINT"
+            )
+            con.execute(
+                f"UPDATE {_q(table_name)} "
+                f"SET {_q(new_col)} = CAST(date_part('{part}', {_q(source_col)}) AS BIGINT)"
+            )
+            derived.append(new_col)
+            existing.add(new_col)
+    if derived:
+        steps.append({
+            "name": "derive_date_parts",
+            "columns_added": derived,
+            "rows_affected": total_rows,
+        })
+
+    # 3. Standardize categorical casing (trim + title-case). DuckDB has no built-in
     # title-case function, so the canonical form is computed in Python per distinct
     # value and written back with a targeted UPDATE. On the real dataset this is a
     # defensive no-op -- a direct scan found the checked columns already
@@ -168,8 +211,8 @@ def clean(
         "rows_changed": sum(casing_changed.values()),
     })
 
-    # 3. Drop degenerate/junk columns identified during A3 profiling (e.g. the
-    # constant-value record_count column) -- a documented structural cleaning
+    # 4. Drop degenerate/junk columns identified during A3 profiling (e.g. a
+    # constant-value row-counter artifact) -- a documented structural cleaning
     # decision, not silently dropped.
     existing = set(_table_columns(con, table_name))
     dropped = [c for c in quality_cfg.get("drop_after_profiling", []) if c in existing]

@@ -2,7 +2,7 @@
 
 Every identifier (table name, dims, metrics, filter columns) is caller-supplied data,
 validated against the table's live schema at call time and safely quoted -- there are
-no Superstore column names as literals anywhere in this file, per PROJECT_SPEC.md
+no dataset column names as literals anywhere in this file, per PROJECT_SPEC.md
 Section 2's generic/specific boundary. Filter values are always bound as DuckDB query
 parameters, never string-interpolated.
 """

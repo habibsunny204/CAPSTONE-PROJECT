@@ -1,14 +1,14 @@
-"""Loads the raw Global Superstore CSV into an in-memory DuckDB table (Task A1).
+"""Loads the raw Global E-Commerce Sales CSV into an in-memory DuckDB table (Task A1).
 
-Purely mechanical by design: read the CSV, apply the PII gate, rename raw
-dot-separated columns to snake_case, and create the DuckDB table. Judgment-based
-cleaning (date parsing, casing standardization, dropping degenerate columns) is
-deliberately left to backend/quality.py (Task A3) so this module stays a thin,
+Purely mechanical by design: read the CSV, apply the PII gate, rename raw column
+headers to snake_case, and create the DuckDB table. Judgment-based cleaning (date
+parsing, casing standardization, deriving calendar parts, dropping degenerate columns)
+is deliberately left to backend/quality.py (Task A3) so this module stays a thin,
 predictable ingestion step.
 
 Column names and PII rules are never hardcoded here — they are read from
-configs/dataset_config.yaml, keeping this module free of Superstore-specific column
-name literals per PROJECT_SPEC.md Section 2's generic/specific boundary.
+configs/dataset_config.yaml, keeping this module free of dataset-specific column name
+literals per PROJECT_SPEC.md Section 2's generic/specific boundary.
 """
 
 from __future__ import annotations
@@ -56,7 +56,12 @@ def _apply_pii_gate(df: pd.DataFrame, pii_config: dict[str, Any]) -> pd.DataFram
     df = df.drop(columns=[c for c in drop_columns if c in df.columns])
 
     hash_columns: dict[str, str] = pii_config.get("hash_columns", {})
-    if hash_columns:
+    # Presence-guarded like the drop path above: a configured hash column that isn't in
+    # this CSV is skipped rather than raising KeyError, so the gate degrades safely if
+    # the config and the file drift apart. The salt is demanded only when there is
+    # something to hash, so a dataset with no PII needs no salt configured.
+    present = {raw: target for raw, target in hash_columns.items() if raw in df.columns}
+    if present:
         salt_env_var = pii_config["hash_salt_env_var"]
         salt = os.environ.get(salt_env_var)
         if not salt:
@@ -66,11 +71,11 @@ def _apply_pii_gate(df: pd.DataFrame, pii_config: dict[str, Any]) -> pd.DataFram
                 "rather than falling back to a default."
             )
         hash_length = pii_config.get("hash_length", 16)
-        for raw_col, target_col in hash_columns.items():
+        for raw_col in present:
             df[raw_col] = df[raw_col].astype(str).map(
                 lambda v: _hash_value(v, salt, hash_length)
             )
-        df = df.rename(columns=hash_columns)
+        df = df.rename(columns=present)
 
     return df
 
