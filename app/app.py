@@ -25,14 +25,19 @@ backend/scope.py for why the view keeps the base table's name.
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
+import traceback
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 # Allow `streamlit run app/app.py` to import the sibling packages (backend/, llm/,
 # viz/, export/) -- Streamlit puts the script's own directory on sys.path, not the
@@ -163,6 +168,34 @@ def render_sidebar_filters(
     if not applied:
         applied = {"Filters": "none (full dataset)"}
     return filtered, applied, spec_list
+
+
+@contextmanager
+def guarded_section(label: str):
+    """Contain a rendering failure to the section that caused it.
+
+    Streamlit's default for an uncaught exception is to replace the entire page with a
+    red traceback -- every tab, chart and prior answer vanishes, and the user is shown
+    a stack trace they can do nothing with. For a dashboard that is both alarming and
+    unhelpful, and during a live demo it looks like the whole app fell over when in
+    fact one chart could not be drawn.
+
+    Wrapping each section means the rest of the page keeps working and the failure is
+    reported where it happened. The traceback is kept, but folded away: it is for
+    whoever is debugging, not for whoever is reading.
+    """
+    try:
+        yield
+    except Exception as error:  # noqa: BLE001 - a UI backstop must catch everything
+        logger.exception("Rendering failed in %s", label)
+        st.error(
+            f"Something went wrong while rendering {label}: "
+            f"**{type(error).__name__}: {error}**\n\n"
+            "The rest of the dashboard is unaffected -- adjust the filters or your "
+            "question and try again."
+        )
+        with st.expander("Technical details"):
+            st.code(traceback.format_exc(), language="text")
 
 
 def scope_labels(config: dict[str, Any]) -> dict[str, str]:
@@ -380,7 +413,10 @@ def render_ai_tab(data: dict[str, Any], applied_filters: dict[str, Any],
                 "for a ready-made insight."
             )
         for index, turn in enumerate(st.session_state["turns"]):
-            _render_turn(turn, index, config, applied_filters, data, scope_rows)
+            # Guarded per turn: one answer that can't be drawn must not take the whole
+            # transcript with it, since the conversation above it is the user's history.
+            with guarded_section(f"answer {index + 1}"):
+                _render_turn(turn, index, config, applied_filters, data, scope_rows)
 
     question = st.chat_input("Ask a question about the data", key="chat_input")
     if question and question.strip():
@@ -516,21 +552,31 @@ def _render_answer(answer: dict[str, Any], index: int, config: dict[str, Any],
             help=f"Auto-selected: {selection.chart_type}. {selection.reason}",
         )
 
+        # An override cannot reuse the auto-selection's axes -- when select_chart()
+        # chose `table` it left x and y as None, and passing those to Plotly raises.
+        # resolve_override() re-derives axes from the result's shape, and returns None
+        # when the data genuinely cannot be drawn that way.
         effective = selection
         if chosen_type != selection.chart_type:
-            effective = auto_select.ChartSelection(
-                chart_type=chosen_type, x=selection.x, y=selection.y,
-                color=selection.color, reason="Manually overridden.",
-            )
+            effective = auto_select.resolve_override(result_df, chosen_type)
 
-        figure = charts.build_from_selection(result_df, effective, config, title=answer["question"])
-        if figure is not None:
-            st.plotly_chart(figure, width='stretch')
-            st.caption(effective.reason)
-        elif effective.chart_type == auto_select.CHART_METRIC:
-            st.metric(str(result_df.columns[0]), f"{result_df.iloc[0, 0]:,.2f}")
-        else:
+        if effective is None:
+            st.info(
+                f"This result can't be shown as a **{chosen_type}** chart -- "
+                "showing the table instead. Pick another chart type above."
+            )
             st.dataframe(result_df, width='stretch')
+        else:
+            figure = charts.build_from_selection(
+                result_df, effective, config, title=answer["question"]
+            )
+            if figure is not None:
+                st.plotly_chart(figure, width='stretch')
+                st.caption(effective.reason)
+            elif effective.chart_type == auto_select.CHART_METRIC:
+                st.metric(str(result_df.columns[0]), charts.format_scalar(result_df.iloc[0, 0]))
+            else:
+                st.dataframe(result_df, width='stretch')
 
         with st.expander("Result data and generated SQL"):
             st.dataframe(result_df, width='stretch')
@@ -634,16 +680,22 @@ def _render_anomaly_detection(llm_con, table_name: str, config: dict[str, Any],
                        if c in filtered.columns]
 
     if run:
-        report = anomaly_detection.detect_anomalies(
-            llm_con, table_name, config, column=column,
-            context_columns=context_columns, limit=int(limit),
-        )
-        with st.spinner("Explaining the flagged rows..."):
-            try:
-                report = anomaly_detection.explain_anomalies(report)
-            except Exception as error:  # noqa: BLE001
-                report.narrative = f"Could not generate an explanation: {type(error).__name__}: {error}"
-        st.session_state["anomaly_report"] = report
+        # Guarded around the whole detect-and-explain step: on failure nothing is
+        # written to session state, so the previous report (if any) stays on screen
+        # rather than the tab going blank behind an error.
+        with guarded_section("anomaly detection"):
+            report = anomaly_detection.detect_anomalies(
+                llm_con, table_name, config, column=column,
+                context_columns=context_columns, limit=int(limit),
+            )
+            with st.spinner("Explaining the flagged rows..."):
+                try:
+                    report = anomaly_detection.explain_anomalies(report)
+                except Exception as error:  # noqa: BLE001
+                    report.narrative = (
+                        f"Could not generate an explanation: {type(error).__name__}: {error}"
+                    )
+            st.session_state["anomaly_report"] = report
 
     report = st.session_state.get("anomaly_report")
     if report is None:
@@ -709,9 +761,10 @@ def _render_comparative_analysis(llm_con, table_name: str, config: dict[str, Any
                                             index=min(1, len(options) - 1), key="comparison_right")
 
         if st.button("Compare", type="primary", key="comparison_run") and metrics:
-            result = comparative_analysis.compare_dimension_values(
-                llm_con, table_name, dimension, left_value, right_value, metrics
-            )
+            with guarded_section("the comparison"):
+                result = comparative_analysis.compare_dimension_values(
+                    llm_con, table_name, dimension, left_value, right_value, metrics
+                )
     else:
         date_columns = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
         date_column = st.selectbox("Date column", date_columns, key="comparison_date_column")
@@ -728,12 +781,13 @@ def _render_comparative_analysis(llm_con, table_name: str, config: dict[str, Any
         ready = (isinstance(left_range, tuple) and len(left_range) == 2
                  and isinstance(right_range, tuple) and len(right_range) == 2)
         if st.button("Compare", type="primary", key="comparison_run") and metrics and ready:
-            result = comparative_analysis.compare_date_ranges(
-                llm_con, table_name, date_column,
-                (str(left_range[0]), str(left_range[1])),
-                (str(right_range[0]), str(right_range[1])),
-                metrics,
-            )
+            with guarded_section("the comparison"):
+                result = comparative_analysis.compare_date_ranges(
+                    llm_con, table_name, date_column,
+                    (str(left_range[0]), str(left_range[1])),
+                    (str(right_range[0]), str(right_range[1])),
+                    metrics,
+                )
 
     if result is not None:
         with st.spinner("Writing the comparison..."):
@@ -780,14 +834,18 @@ def main() -> None:
     overview_tab, exploration_tab, ai_tab, advanced_tab = st.tabs(
         ["Overview", "Exploration", "AI Assistant", "Advanced"]
     )
-    with overview_tab:
-        render_overview_tab(data, filtered)
-    with exploration_tab:
-        render_exploration_tab(data, filtered)
-    with ai_tab:
-        render_ai_tab(data, applied_filters, scope_spec)
-    with advanced_tab:
-        render_advanced_tab(data, filtered, scope_spec)
+    # Each tab is guarded independently so a failure in one -- an undrawable chart, a
+    # filter combination a feature can't handle -- reports itself in place instead of
+    # replacing the whole dashboard with a traceback.
+    tabs = [
+        (overview_tab, "the Overview tab", lambda: render_overview_tab(data, filtered)),
+        (exploration_tab, "the Exploration tab", lambda: render_exploration_tab(data, filtered)),
+        (ai_tab, "the AI Assistant tab", lambda: render_ai_tab(data, applied_filters, scope_spec)),
+        (advanced_tab, "the Advanced tab", lambda: render_advanced_tab(data, filtered, scope_spec)),
+    ]
+    for tab, label, render in tabs:
+        with tab, guarded_section(label):
+            render()
 
 
 main()
