@@ -100,3 +100,53 @@ def select_chart(df: pd.DataFrame) -> ChartSelection:
 
     return ChartSelection(CHART_TABLE, None, None, None,
                           f"{n_cols} columns -- shown as a table.")
+
+
+def resolve_override(df: pd.DataFrame, chart_type: str) -> ChartSelection | None:
+    """Axes for a user-chosen chart type, re-derived from `df`'s shape.
+
+    select_chart() only ever proposes a chart the data can actually support, but the
+    UI lets the user override that choice, and an override cannot reuse the
+    auto-selection's axes: when select_chart() picked `table` it left x and y as None,
+    and handing those to Plotly raises rather than degrading.
+
+    Returns None when `df` genuinely cannot be drawn that way (asking for a scatter
+    with only one numeric column, or a metric from a multi-row result), so the caller
+    can say so instead of crashing. Same generic rule: dtype and column count only,
+    never column identity.
+    """
+    if df is None or df.empty or len(df.columns) == 0:
+        return ChartSelection(CHART_TABLE, None, None, None, "Empty result -- nothing to plot.")
+
+    if chart_type == CHART_TABLE:
+        return ChartSelection(CHART_TABLE, None, None, None, "Shown as a table.")
+
+    datetime_cols, numeric_cols, categorical_cols = _classify_columns(df)
+
+    if chart_type == CHART_METRIC:
+        if df.shape == (1, 1):
+            return ChartSelection(CHART_METRIC, None, df.columns[0], None,
+                                  "Single value -- shown as a headline figure.")
+        return None
+
+    if chart_type == CHART_SCATTER:
+        if len(numeric_cols) >= 2:
+            return ChartSelection(CHART_SCATTER, numeric_cols[0], numeric_cols[1], None,
+                                  "Manually overridden to a scatter plot.")
+        return None
+
+    # Line and bar both want something to plot along x and a numeric y.
+    if not numeric_cols:
+        return None
+    metric = numeric_cols[-1] if len(numeric_cols) > 1 else numeric_cols[0]
+    axis_candidates = (datetime_cols + categorical_cols) if chart_type == CHART_LINE \
+        else (categorical_cols + datetime_cols)
+    axis = next((c for c in axis_candidates if c != metric), None)
+    if axis is None:
+        # Only numeric columns: one can still serve as the axis for the other.
+        axis = next((c for c in numeric_cols if c != metric), None)
+    if axis is None:
+        return None
+
+    return ChartSelection(chart_type, axis, metric, None,
+                          f"Manually overridden to a {chart_type} chart.")

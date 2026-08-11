@@ -68,6 +68,28 @@ def _prettify(name: str) -> str:
     return name.replace("_", " ").title()
 
 
+def format_scalar(value: Any) -> str:
+    """Render a single result cell as display text.
+
+    Thousands-separated to 2dp when the value is numeric, left as-is when it isn't.
+    The obvious f"{value:,.2f}" raises ValueError on any non-numeric cell, which is
+    how the headline-metric view took the whole dashboard down when the chart-type
+    override was pointed at a text result.
+    """
+    if value is None:
+        return "n/a"
+    if isinstance(value, str):
+        return value
+    try:
+        if pd.isna(value):
+            return "n/a"
+    except (TypeError, ValueError):
+        pass  # Not a scalar pandas can test -- fall through to str().
+    if not isinstance(value, bool) and pd.api.types.is_number(value):
+        return f"{value:,.2f}"
+    return str(value)
+
+
 # ---------------------------------------------------------------------------
 # The 7 curated charts (C2)
 # ---------------------------------------------------------------------------
