@@ -14,6 +14,13 @@ interaction, so an uncached ingest would re-parse the 500k-row CSV on every clic
 Page chrome (title, headline KPIs, example questions, export provenance) is read from
 configs/dataset_config.yaml's `app` section rather than hardcoded, so this module holds
 no dataset-specific column names or branding.
+
+The sidebar filters constrain every tab, not just the charts. render_sidebar_filters()
+builds one canonical scope spec; the chart tabs get it applied to a DataFrame, and
+scoped_connection() turns the same spec into a DuckDB view that the AI Assistant, the
+preset insights and both Task D features query through. Since those all take only
+(connection, table_name), swapping the connection is what scopes them -- see
+backend/scope.py for why the view keeps the base table's name.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
@@ -31,7 +39,7 @@ import streamlit as st
 # repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend import ingest, quality, schema as schema_module  # noqa: E402
+from backend import ingest, quality, schema as schema_module, scope  # noqa: E402
 from export.docx_export import build_answer_docx  # noqa: E402
 from export.pdf_export import build_answer_pdf  # noqa: E402
 from features import anomaly_detection, comparative_analysis  # noqa: E402
@@ -80,6 +88,10 @@ def _init_session_state() -> None:
     # One chronological list of conversation turns (typed questions, preset
     # insights, and errors alike), so the transcript renders in a single pass.
     st.session_state.setdefault("turns", [])
+    # DuckDB schema holding this session's filtered view. Per-session because the
+    # connection is @st.cache_resource'd and shared across browser sessions -- a fixed
+    # name would let one user's sidebar filters silently rescope another user's answers.
+    st.session_state.setdefault("scope_schema", f"scope_{uuid4().hex[:12]}")
 
 
 # ---------------------------------------------------------------------------
@@ -87,15 +99,25 @@ def _init_session_state() -> None:
 # ---------------------------------------------------------------------------
 
 
-def render_sidebar_filters(df: pd.DataFrame, config: dict[str, Any]) -> tuple[pd.DataFrame, dict[str, Any]]:
+def render_sidebar_filters(
+    df: pd.DataFrame, config: dict[str, Any]
+) -> tuple[pd.DataFrame, dict[str, Any], list[dict[str, Any]]]:
     """Render the configured global filters and return (filtered DataFrame, a
-    human-readable summary of what's applied). Filter definitions come from
-    configs/dataset_config.yaml, so adding one is a config change, not a code change.
+    human-readable summary for display/export, the canonical scope spec). Filter
+    definitions come from configs/dataset_config.yaml, so adding one is a config
+    change, not a code change.
+
+    The third return value is the machine-readable form -- a list of
+    {"column", "op", "value"} dicts, the same shape backend/query_engine.py accepts.
+    The DataFrame is only usable by the chart tabs; every LLM and Task-D path holds a
+    connection and a table name instead, and needs the predicate itself to build a
+    scoped view (backend/scope.py). Both renderings come from this one spec so they
+    cannot describe different row sets.
     """
     st.sidebar.header("Filters")
-    st.sidebar.caption("Applied across the Overview and Exploration tabs.")
+    st.sidebar.caption("Applied across every tab: charts, AI answers, and Task D features.")
 
-    filtered = df
+    spec_list: list[dict[str, Any]] = []
     applied: dict[str, Any] = {}
 
     for spec in config.get("filters", []):
@@ -114,26 +136,65 @@ def render_sidebar_filters(df: pd.DataFrame, config: dict[str, Any]) -> tuple[pd
                 label, value=(min_date, max_date),
                 min_value=min_date, max_value=max_date, key=f"filter_{column}",
             )
-            if isinstance(chosen, tuple) and len(chosen) == 2:
+            # Only recorded when it actually narrows: a range left at the full bounds
+            # is a no-op, and emitting it anyway would make the scope read as "active"
+            # and attach a filtered-data caveat to answers that cover everything.
+            if isinstance(chosen, tuple) and len(chosen) == 2 and tuple(chosen) != (min_date, max_date):
                 start, end = chosen
-                filtered = filtered[
-                    (filtered[column] >= pd.Timestamp(start)) & (filtered[column] <= pd.Timestamp(end))
-                ]
-                if (start, end) != (min_date, max_date):
-                    applied[label] = f"{start} to {end}"
+                spec_list.append({
+                    "column": column, "op": "between",
+                    # Normalized to Timestamps here so the pandas and SQL renderings
+                    # compare against an identical value.
+                    "value": [pd.Timestamp(start), pd.Timestamp(end)],
+                })
+                applied[label] = f"{start} to {end}"
 
         elif spec["type"] == "multiselect":
             options = sorted(df[column].dropna().unique().tolist())
             chosen = st.sidebar.multiselect(label, options, default=[], key=f"filter_{column}")
             if chosen:
-                filtered = filtered[filtered[column].isin(chosen)]
+                spec_list.append({"column": column, "op": "in", "value": list(chosen)})
                 applied[label] = ", ".join(str(c) for c in chosen)
+
+    filtered = scope.apply_to_frame(df, spec_list)
 
     st.sidebar.metric("Rows after filters", f"{len(filtered):,}", delta=f"{len(filtered) - len(df):,}"
                       if len(filtered) != len(df) else None)
     if not applied:
         applied = {"Filters": "none (full dataset)"}
-    return filtered, applied
+    return filtered, applied, spec_list
+
+
+def scope_labels(config: dict[str, Any]) -> dict[str, str]:
+    """Column -> sidebar label, so scope descriptions read the way the UI does."""
+    return {f["column"]: f["label"] for f in config.get("filters", [])}
+
+
+def scoped_connection(data: dict[str, Any], spec: list[dict[str, Any]]) -> Any:
+    """A cursor whose bare table name resolves to the sidebar-filtered rows.
+
+    This is the single point where the sidebar reaches the SQL world. Everything
+    downstream -- the NL pipeline, the three preset insights, anomaly detection and
+    comparative analysis -- takes only (connection, table_name), so swapping the
+    connection scopes all of them at once with no change to their signatures.
+
+    The schema is per browser session because the DuckDB connection is cached per
+    server process (@st.cache_resource) and therefore shared: a fixed schema name would
+    let one user's filters rewrite another user's results mid-session.
+    """
+    schema_name = st.session_state["scope_schema"]
+    return scope.scoped_cursor(data["con"], data["table_name"], schema_name, spec)
+
+
+def render_scope_notice(spec: list[dict[str, Any]], config: dict[str, Any]) -> None:
+    """State the active scope on tabs whose numbers would otherwise look dataset-wide."""
+    if not scope.is_active(spec):
+        return
+    st.info(
+        f"Filtered view: **{scope.describe(spec, scope_labels(config))}**. "
+        "Results below cover only these rows.",
+        icon=":material/filter_alt:",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +227,9 @@ def render_overview_tab(data: dict[str, Any], filtered: pd.DataFrame) -> None:
     st.subheader("Data quality")
     st.caption(
         "Profiled and cleaned at load time by `backend/quality.py` (Task A3). "
-        "These figures describe the full dataset, before sidebar filters."
+        "This is the one panel that deliberately ignores the sidebar: it reports what "
+        "ingestion did to the source data, which is a property of the dataset rather "
+        "than of any filtered slice. Every other number in this app is filtered."
     )
 
     profile = data["profile_after"]
@@ -267,7 +330,8 @@ def _chart_with_export(figure, filename_stem: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def render_ai_tab(data: dict[str, Any], applied_filters: dict[str, Any]) -> None:
+def render_ai_tab(data: dict[str, Any], applied_filters: dict[str, Any],
+                  scope_spec: list[dict[str, Any]]) -> None:
     """A chat interface over the natural-language pipeline (B2), preset insights
     (B3), conversational memory (B4), AI-driven chart selection (C3), and
     per-answer export (C4).
@@ -283,8 +347,16 @@ def render_ai_tab(data: dict[str, Any], applied_filters: dict[str, Any]) -> None
     """
     config, table_name = data["config"], data["table_name"]
     # A dedicated cursor for LLM-generated SQL, kept separate from the connection
-    # ingest/quality used to build the table (see llm/sandbox.py).
-    llm_con = data["con"].cursor()
+    # ingest/quality used to build the table (see llm/sandbox.py), and scoped to the
+    # sidebar filters so a generated query cannot answer from rows the user filtered
+    # out. The table name is unchanged -- only what it resolves to.
+    llm_con = scoped_connection(data, scope_spec)
+    scope_text = scope.describe(scope_spec, scope_labels(config))
+    # Counted through the scoped cursor rather than taken from the pandas frame, so an
+    # exported report states the row count of the scope its SQL actually ran against.
+    scope_rows = llm_con.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
+
+    render_scope_notice(scope_spec, config)
 
     header_column, reset_column = st.columns([4, 1])
     header_column.caption(
@@ -296,7 +368,7 @@ def render_ai_tab(data: dict[str, Any], applied_filters: dict[str, Any]) -> None
         st.session_state["turns"] = []
         st.rerun()
 
-    _render_preset_buttons(llm_con, table_name, config)
+    _render_preset_buttons(llm_con, table_name, config, scope_text)
 
     transcript = st.container(height=560)
     with transcript:
@@ -308,16 +380,16 @@ def render_ai_tab(data: dict[str, Any], applied_filters: dict[str, Any]) -> None
                 "for a ready-made insight."
             )
         for index, turn in enumerate(st.session_state["turns"]):
-            _render_turn(turn, index, config, applied_filters, data)
+            _render_turn(turn, index, config, applied_filters, data, scope_rows)
 
     question = st.chat_input("Ask a question about the data", key="chat_input")
     if question and question.strip():
-        _run_question(llm_con, table_name, config, question.strip(), transcript)
+        _run_question(llm_con, table_name, config, question.strip(), transcript, scope_text)
         st.rerun()
 
 
 def _run_question(llm_con, table_name: str, config: dict[str, Any], question: str,
-                  transcript) -> None:
+                  transcript, scope_description: str = "") -> None:
     """Run one question through the pipeline and append it to the conversation.
 
     The loading indicator (Task B5's UI half) is written into `transcript` so
@@ -334,6 +406,7 @@ def _run_question(llm_con, table_name: str, config: dict[str, Any], question: st
                 result = pipeline.answer_question(
                     llm_con, table_name, config, question,
                     history=st.session_state["memory"].get_history(),
+                    scope_description=scope_description,
                 )
                 elapsed = time.perf_counter() - started
                 status.update(
@@ -360,7 +433,8 @@ def _run_question(llm_con, table_name: str, config: dict[str, Any], question: st
                 })
 
 
-def _render_preset_buttons(llm_con, table_name: str, config: dict[str, Any]) -> None:
+def _render_preset_buttons(llm_con, table_name: str, config: dict[str, Any],
+                           scope_description: str = "") -> None:
     """The three preset insights (Task B3), offered as suggested prompts.
 
     Their output is appended to the same conversation as a normal assistant turn,
@@ -377,7 +451,7 @@ def _render_preset_buttons(llm_con, table_name: str, config: dict[str, Any]) -> 
         if column.button(label, width='stretch', key=f"preset_{label}"):
             with st.spinner(f"Generating {label.lower()}..."):
                 try:
-                    insight = generator(llm_con, table_name, config)
+                    insight = generator(llm_con, table_name, config, scope_description)
                     st.session_state["turns"].append({
                         "kind": "insight", "question": label,
                         "narrative": insight.narrative,
@@ -394,7 +468,8 @@ def _render_preset_buttons(llm_con, table_name: str, config: dict[str, Any]) -> 
 
 
 def _render_turn(turn: dict[str, Any], index: int, config: dict[str, Any],
-                 applied_filters: dict[str, Any], data: dict[str, Any]) -> None:
+                 applied_filters: dict[str, Any], data: dict[str, Any],
+                 scope_rows: int) -> None:
     """Render one conversation turn as a user/assistant message pair."""
     st.chat_message("user").markdown(turn["question"])
 
@@ -414,11 +489,12 @@ def _render_turn(turn: dict[str, Any], index: int, config: dict[str, Any],
                 st.dataframe(samples, width='stretch')
             return
 
-        _render_answer(turn, index, config, applied_filters, data)
+        _render_answer(turn, index, config, applied_filters, data, scope_rows)
 
 
 def _render_answer(answer: dict[str, Any], index: int, config: dict[str, Any],
-                   applied_filters: dict[str, Any], data: dict[str, Any]) -> None:
+                   applied_filters: dict[str, Any], data: dict[str, Any],
+                   scope_rows: int) -> None:
     """Render one answered question: narrative, auto-selected chart with a manual
     override, the result table, and PDF/Word export.
     """
@@ -460,8 +536,11 @@ def _render_answer(answer: dict[str, Any], index: int, config: dict[str, Any],
             st.dataframe(result_df, width='stretch')
             st.code(answer["sql"], language="sql")
 
+    # Rows in scope, not rows in the dataset: the report already prints the applied
+    # filters beside this, so a dataset-wide count here would contradict them.
+    total_rows = data["profile_after"]["n_rows"]
     metadata = {
-        "Rows": f"{data['profile_after']['n_rows']:,}",
+        "Rows": f"{scope_rows:,}" + (f" of {total_rows:,} (filtered)" if scope_rows != total_rows else ""),
         "Source": config["app"]["dataset_display_name"],
         "Provider": answer["provider"],
     }
@@ -497,7 +576,8 @@ def _render_answer(answer: dict[str, Any], index: int, config: dict[str, Any],
 # ---------------------------------------------------------------------------
 
 
-def render_advanced_tab(data: dict[str, Any]) -> None:
+def render_advanced_tab(data: dict[str, Any], filtered: pd.DataFrame,
+                        scope_spec: list[dict[str, Any]]) -> None:
     """Task D's two features: anomaly detection (D1) and comparative analysis (D2).
 
     These get their own tab rather than being folded into Exploration because
@@ -506,21 +586,32 @@ def render_advanced_tab(data: dict[str, Any]) -> None:
     a change to them.
     """
     config, table_name = data["config"], data["table_name"]
-    llm_con = data["con"].cursor()
+    llm_con = scoped_connection(data, scope_spec)
+
+    render_scope_notice(scope_spec, config)
+    if filtered.empty:
+        st.warning("No rows match the current filters. Widen them in the sidebar.")
+        return
 
     anomaly_section, comparison_section = st.tabs(["Anomaly detection", "Comparative analysis"])
     with anomaly_section:
-        _render_anomaly_detection(llm_con, table_name, config, data)
+        _render_anomaly_detection(llm_con, table_name, config, filtered)
     with comparison_section:
-        _render_comparative_analysis(llm_con, table_name, config, data)
+        _render_comparative_analysis(llm_con, table_name, config, filtered)
 
 
 def _render_anomaly_detection(llm_con, table_name: str, config: dict[str, Any],
-                              data: dict[str, Any]) -> None:
-    """D1: pick a numeric column, flag its most extreme rows, explain them."""
+                              filtered: pd.DataFrame) -> None:
+    """D1: pick a numeric column, flag its most extreme rows, explain them.
+
+    `llm_con` is scoped to the sidebar filters, so the IQR fences are computed from
+    the current selection rather than the whole dataset -- "what is unusual within
+    this slice", which stays self-consistent with the rows actually shown.
+    """
     st.caption(
         "Reuses the IQR outlier logic from the data-quality layer (Task A3) to flag "
-        "specific rows, then asks the LLM to explain what makes each one unusual."
+        "specific rows, then asks the LLM to explain what makes each one unusual. "
+        "Outlier bounds are computed from the currently filtered rows."
     )
 
     candidates = anomaly_detection.outlier_columns(llm_con, table_name, config)
@@ -540,7 +631,7 @@ def _render_anomaly_detection(llm_con, table_name: str, config: dict[str, Any],
     run = controls[2].button("Detect", type="primary", width='stretch', key="anomaly_run")
 
     context_columns = [c for c in config["app"].get("anomaly_context_columns", [])
-                       if c in data["df"].columns]
+                       if c in filtered.columns]
 
     if run:
         report = anomaly_detection.detect_anomalies(
@@ -579,15 +670,21 @@ def _render_anomaly_detection(llm_con, table_name: str, config: dict[str, Any],
 
 
 def _render_comparative_analysis(llm_con, table_name: str, config: dict[str, Any],
-                                 data: dict[str, Any]) -> None:
-    """D2: compare two dimension values or two date ranges side by side."""
+                                 filtered: pd.DataFrame) -> None:
+    """D2: compare two dimension values or two date ranges side by side.
+
+    Option lists are built from the *filtered* frame, not the full dataset. That is
+    what stops the confusing case where the sidebar is narrowed to one region but the
+    dimension dropdown still offers the excluded ones, inviting a comparison whose
+    other side is necessarily zero.
+    """
     st.caption(
         "Runs the query engine (Task A2) once per side, then asks the LLM for a "
         "structured side-by-side narrative. All arithmetic is done in Python -- the "
         "model only describes figures it is handed."
     )
 
-    df = data["df"]
+    df = filtered
     numeric_columns = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])
                        and c != config["dataset"].get("id_column")]
     categorical_columns = [c for c in df.columns
@@ -678,7 +775,7 @@ def main() -> None:
         "and the result comes back as a chart and a written answer."
     )
 
-    filtered, applied_filters = render_sidebar_filters(data["df"], data["config"])
+    filtered, applied_filters, scope_spec = render_sidebar_filters(data["df"], data["config"])
 
     overview_tab, exploration_tab, ai_tab, advanced_tab = st.tabs(
         ["Overview", "Exploration", "AI Assistant", "Advanced"]
@@ -688,9 +785,9 @@ def main() -> None:
     with exploration_tab:
         render_exploration_tab(data, filtered)
     with ai_tab:
-        render_ai_tab(data, applied_filters)
+        render_ai_tab(data, applied_filters, scope_spec)
     with advanced_tab:
-        render_advanced_tab(data)
+        render_advanced_tab(data, filtered, scope_spec)
 
 
 main()
