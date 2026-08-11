@@ -8,6 +8,7 @@ running application, not test doubles for a dependency it doesn't control).
 """
 
 import json
+import warnings
 
 import pandas as pd
 import pytest
@@ -268,3 +269,137 @@ def test_scope_description_reaches_the_prompt_only_when_filtered(mini_con_clean,
     assert "dashboard filters" not in unscoped_prompt
     assert "Region is one of [Asia]" in scoped_prompt
     assert "Do not add these conditions" in scoped_prompt
+
+
+# ---------------------------------------------------------------------------
+# Chart captions (Task C3)
+# ---------------------------------------------------------------------------
+
+
+def test_generate_chart_caption_returns_one_sentence_and_provider(monkeypatch):
+    """The caption is a live LLM call, not a template -- assert the model's text is
+    what comes back, and that the provider is reported alongside it.
+    """
+    monkeypatch.setattr(
+        pipeline.client, "generate",
+        _fake_generate("Asia leads revenue at 7,594, roughly ten times Europe's 706."),
+    )
+
+    caption, provider = pipeline.generate_chart_caption(
+        "What is total revenue by region?", "bar",
+        pd.DataFrame({"region": ["Asia", "Europe"], "total_revenue": [7594.0, 706.0]}),
+        x_column="region", y_column="total_revenue",
+    )
+
+    assert caption == "Asia leads revenue at 7,594, roughly ten times Europe's 706."
+    assert provider == "gemini"
+
+
+def test_chart_caption_prompt_carries_the_chart_binding_and_rows(monkeypatch):
+    """The prompt must describe what is actually plotted -- chart type, axes, and the
+    rows -- otherwise the model can only restate the question, which is the failure
+    mode the system prompt forbids.
+    """
+    captured = {}
+
+    def capture(system_prompt, user_prompt, json_mode=False, timeout_s=30.0):
+        captured["system"] = system_prompt
+        captured["user"] = user_prompt
+        return client.LLMResult(text="A caption.", provider="groq", elapsed_ms=1.0)
+
+    monkeypatch.setattr(pipeline.client, "generate", capture)
+
+    pipeline.generate_chart_caption(
+        "Revenue by region?", "bar",
+        pd.DataFrame({"region": ["Asia"], "total_revenue": [7594.0]}),
+        x_column="region", y_column="total_revenue",
+    )
+
+    payload = json.loads(captured["user"])
+    assert payload["chart_type"] == "bar"
+    assert payload["x_axis"] == "region"
+    assert payload["y_axis"] == "total_revenue"
+    assert payload["plotted_rows"] == [{"region": "Asia", "total_revenue": 7594.0}]
+    assert "exactly one sentence" in captured["system"]
+    # The two failure modes the caption must avoid.
+    assert "do not say what kind of chart it is" in captured["system"].lower()
+    assert "do not restate the question" in captured["system"].lower()
+
+
+def test_chart_caption_prompt_rounds_floats(monkeypatch):
+    """Task D shipped "-6.434059163572309 percent" into a narrative before values were
+    rounded at the prompt boundary. A caption is one sentence, so an unrounded float
+    dominates it -- assert nothing longer than 2dp reaches the model.
+    """
+    captured = {}
+
+    def capture(system_prompt, user_prompt, json_mode=False, timeout_s=30.0):
+        captured["user"] = user_prompt
+        return client.LLMResult(text="A caption.", provider="groq", elapsed_ms=1.0)
+
+    monkeypatch.setattr(pipeline.client, "generate", capture)
+
+    pipeline.generate_chart_caption(
+        "Average discount by region?", "bar",
+        pd.DataFrame({"region": ["Asia"], "avg_discount": [14.293847562819374]}),
+        x_column="region", y_column="avg_discount",
+    )
+
+    assert json.loads(captured["user"])["plotted_rows"] == [
+        {"region": "Asia", "avg_discount": 14.29}
+    ]
+
+
+def test_chart_caption_prompt_handles_a_datetime_axis(monkeypatch):
+    """A datetime x-axis is one of the two most common shapes reaching the caption.
+    Rounding must not warn or fail on it (a bare DataFrame.round() warns on datetime
+    dtypes), and the dates must survive into the payload.
+    """
+    captured = {}
+
+    def capture(system_prompt, user_prompt, json_mode=False, timeout_s=30.0):
+        captured["user"] = user_prompt
+        return client.LLMResult(text="A caption.", provider="groq", elapsed_ms=1.0)
+
+    monkeypatch.setattr(pipeline.client, "generate", capture)
+
+    frame = pd.DataFrame({
+        "transaction_date": pd.to_datetime(["2024-01-01", "2024-02-01"]),
+        "total_revenue": [1.23456, 2.34567],
+    })
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        pipeline.generate_chart_caption(
+            "Revenue over time?", "line", frame,
+            x_column="transaction_date", y_column="total_revenue",
+        )
+
+    rows = json.loads(captured["user"])["plotted_rows"]
+    assert [r["total_revenue"] for r in rows] == [1.23, 2.35]
+    assert "2024-01-01" in rows[0]["transaction_date"]
+
+
+def test_chart_caption_prompt_truncates_large_results(monkeypatch):
+    """A caption summarises, so it does not need every row -- and a 500-row result
+    would otherwise dominate the prompt budget for one sentence.
+    """
+    captured = {}
+
+    def capture(system_prompt, user_prompt, json_mode=False, timeout_s=30.0):
+        captured["user"] = user_prompt
+        return client.LLMResult(text="A caption.", provider="groq", elapsed_ms=1.0)
+
+    monkeypatch.setattr(pipeline.client, "generate", capture)
+
+    pipeline.generate_chart_caption(
+        "Revenue by product?", "bar",
+        pd.DataFrame({"product": [f"P{i}" for i in range(500)],
+                      "total_revenue": [float(i) for i in range(500)]}),
+        x_column="product", y_column="total_revenue",
+    )
+
+    payload = json.loads(captured["user"])
+    assert len(payload["plotted_rows"]) == 30
+    assert payload["row_count"] == 500
+    assert payload["truncated"] is True

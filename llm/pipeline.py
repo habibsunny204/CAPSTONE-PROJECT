@@ -138,6 +138,34 @@ def _generate_narrative(question: str, sql: str, result_df: pd.DataFrame,
     return result.text, result.provider
 
 
+def generate_chart_caption(
+    question: str,
+    chart_type: str,
+    result_df: pd.DataFrame,
+    x_column: str | None = None,
+    y_column: str | None = None,
+    series_column: str | None = None,
+) -> tuple[str, str]:
+    """One LLM-written sentence describing what an AI-selected chart shows (Task C3).
+    Returns (caption, provider).
+
+    Separate from Phase 3's narrative rather than folded into it: the narrative is
+    generated once when the question is answered, but the caption depends on the chart
+    type, which the user can change afterwards via the override control. Bundling them
+    would mean either regenerating the narrative on every override or captioning the
+    wrong chart.
+
+    Callers are responsible for not calling this on every rerun -- see the caching note
+    in app/app.py. This function makes a live API call every time it is invoked.
+    """
+    system_prompt = prompts.build_chart_caption_system_prompt()
+    user_prompt = prompts.build_chart_caption_user_prompt(
+        question, chart_type, x_column, y_column, series_column, result_df
+    )
+    result = client.generate(system_prompt, user_prompt, json_mode=False)
+    return result.text.strip(), result.provider
+
+
 def _unanswerable_result(question: str, sql: str, reasoning: str, provider: str, retried: bool) -> PipelineResult:
     """Phase 1 declared the question unanswerable (sql == ""). Its reasoning already
     explains why -- don't force a retry loop or an empty-result narrative call.

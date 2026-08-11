@@ -528,6 +528,40 @@ def _render_turn(turn: dict[str, Any], index: int, config: dict[str, Any],
         _render_answer(turn, index, config, applied_filters, data, scope_rows)
 
 
+def _chart_caption(answer: dict[str, Any], index: int,
+                   selection: auto_select.ChartSelection) -> str:
+    """The one-sentence LLM-generated caption under an AI chart (Task C3), generated
+    once per (answer, chart type) and cached in session state.
+
+    The caching is not an optimisation, it is what makes this correct. Streamlit
+    re-executes this whole script on every widget interaction, so a bare
+    pipeline.generate_chart_caption() call here would fire a live API call on every
+    keystroke in a sidebar filter -- the same shape of bug that made chart image export
+    cost 10+ seconds per rerun, except this one also burns a rate-limited free-tier
+    quota. Keying on chart_type (rather than just the answer) means overriding the
+    chart type regenerates the caption, which is the point: a caption describing a bar
+    chart is wrong once the user switches to a line.
+
+    A provider failure degrades to the deterministic selection reason rather than
+    raising. guarded_section() would catch the raise, but losing the whole answer over
+    a decorative sentence is a bad trade, and this failure is foreseeable enough to
+    handle where it happens.
+    """
+    cache_key = f"caption_{index}_{selection.chart_type}"
+    if cache_key not in st.session_state:
+        try:
+            caption, provider = pipeline.generate_chart_caption(
+                answer["question"], selection.chart_type, answer["result"],
+                x_column=selection.x, y_column=selection.y,
+                series_column=selection.color,
+            )
+            st.session_state[cache_key] = f"{caption} _(caption by {provider})_"
+        except Exception:
+            logger.exception("Chart caption generation failed for turn %s", index)
+            st.session_state[cache_key] = selection.reason
+    return st.session_state[cache_key]
+
+
 def _render_answer(answer: dict[str, Any], index: int, config: dict[str, Any],
                    applied_filters: dict[str, Any], data: dict[str, Any],
                    scope_rows: int) -> None:
@@ -572,7 +606,7 @@ def _render_answer(answer: dict[str, Any], index: int, config: dict[str, Any],
             )
             if figure is not None:
                 st.plotly_chart(figure, width='stretch')
-                st.caption(effective.reason)
+                st.caption(_chart_caption(answer, index, effective))
             elif effective.chart_type == auto_select.CHART_METRIC:
                 st.metric(str(result_df.columns[0]), charts.format_scalar(result_df.iloc[0, 0]))
             else:

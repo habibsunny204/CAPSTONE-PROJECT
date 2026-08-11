@@ -148,6 +148,70 @@ def build_narrative_user_prompt(question: str, sql: str, result_df: pd.DataFrame
     return json.dumps(payload, indent=2, default=str)
 
 
+def build_chart_caption_system_prompt() -> str:
+    """System prompt for the one-sentence caption printed under an AI-selected chart
+    (Task C3).
+
+    Deliberately distinct from the Phase 3 narrative: that one answers the question in
+    2-5 sentences, this one describes what the *chart* shows. The rubric asks for a
+    caption "describing what the chart shows", so the prompt forbids the two failure
+    modes that would defeat that -- restating the question back, and describing the
+    chart type ("this is a bar chart") instead of its content, which is exactly what
+    the hardcoded string this replaces used to do.
+    """
+    return (
+        "You write one-sentence captions for charts on a business dashboard. "
+        "You will be given the user's question, the chart type, which columns are on "
+        "which axis, and the plotted rows. Reply with exactly one sentence, in plain "
+        "text, describing what the chart shows about the data -- the shape, the "
+        "standout value, or the comparison a reader should take away. "
+        "Use only numbers present in the rows; never invent or estimate one. "
+        "Do not restate the question, do not say what kind of chart it is, do not use "
+        "Markdown, and do not add a second sentence."
+    )
+
+
+def build_chart_caption_user_prompt(
+    question: str,
+    chart_type: str,
+    x_column: str | None,
+    y_column: str | None,
+    series_column: str | None,
+    result_df: pd.DataFrame,
+) -> str:
+    """User-turn content for the chart caption: the question, how the chart is bound
+    to columns, and the plotted rows as compact JSON.
+
+    Floats are rounded before they enter the prompt. Task D hit this exact bug -- raw
+    values reached the model and came back echoed verbatim as
+    "-6.434059163572309 percent" -- and a caption is one sentence, so a 16-digit float
+    in it is proportionally far more damaging than in a narrative.
+
+    Capped at 30 rows: a caption summarises, so representative rows are enough, and a
+    500-row result would otherwise dominate the prompt budget for one sentence.
+    """
+    max_rows = 30
+    frame = result_df.head(max_rows)
+    # Round float columns only, by name. A bare frame.round(2) warns on datetime
+    # columns ("obj.round has no effect with datetime ... dtypes"), and a datetime
+    # x-axis is one of the two most common shapes reaching this function.
+    float_columns = [c for c in frame.columns if pd.api.types.is_float_dtype(frame[c])]
+    if float_columns:
+        frame = frame.round({c: 2 for c in float_columns})
+    records = frame.to_dict(orient="records")
+    payload = {
+        "question": question,
+        "chart_type": chart_type,
+        "x_axis": x_column,
+        "y_axis": y_column,
+        "series": series_column,
+        "row_count": len(result_df),
+        "plotted_rows": records,
+        "truncated": len(result_df) > max_rows,
+    }
+    return json.dumps(payload, indent=2, default=str)
+
+
 def build_conversation_context(history: list[dict[str, Any]]) -> str:
     """Render up to the last 5 (question, sql, answer) turns as prompt text for
     follow-up questions (Task B4). `history` is newest-last; memory.py owns

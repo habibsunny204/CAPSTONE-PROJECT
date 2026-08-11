@@ -1,10 +1,14 @@
 """Streamlit UI smoke tests via AppTest (PROJECT_SPEC.md Section 8).
 
 Deliberately shallow: does the app boot, do the three tabs render, do the sidebar
-filters exist, does filtering actually narrow the data. It does NOT touch the AI
-Assistant's LLM calls -- those only fire on a button press, and asserting on live
-model output would make the suite slow, costly, and non-deterministic. Pipeline
-behaviour is covered by tests/test_integration.py instead.
+filters exist, does filtering actually narrow the data. It does NOT make live LLM
+calls -- asserting on live model output would make the suite slow, costly, and
+non-deterministic. Pipeline behaviour is covered by tests/test_integration.py instead.
+
+Most LLM work only fires on a button press, which these tests never make. The one
+exception is the C3 chart caption, which is generated when a stored answer *renders*,
+so the `no_live_captions` autouse fixture below stubs it -- otherwise seeding a turn
+would quietly spend real API quota.
 
 These run against the real dataset, so they skip when data/raw/ is absent.
 """
@@ -15,12 +19,31 @@ import pytest
 
 from streamlit.testing.v1 import AppTest
 
+from llm import pipeline
+
 APP_PATH = Path(__file__).resolve().parent.parent / "app" / "app.py"
 REAL_CSV_PATH = Path(__file__).resolve().parent.parent / "data" / "raw" / "global_ecommerce_sales.csv"
+
+STUB_CAPTION = "A stubbed caption."
 
 pytestmark = pytest.mark.skipif(
     not REAL_CSV_PATH.exists(), reason="real dataset not present locally (data/raw/ is gitignored)"
 )
+
+
+@pytest.fixture(autouse=True)
+def no_live_captions(monkeypatch):
+    """Stub the C3 caption call for every test in this module.
+
+    AppTest executes the app in this process, so app.py's `pipeline` is this module
+    object and patching it here is enough. Autouse rather than opt-in because the call
+    fires on *render* of any answer whose result is chartable -- it is easy to add a
+    test that seeds a turn without realising it now costs an API call.
+    """
+    monkeypatch.setattr(
+        pipeline, "generate_chart_caption",
+        lambda *args, **kwargs: (STUB_CAPTION, "gemini"),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -288,3 +311,116 @@ def test_a_broken_answer_does_not_hide_the_rest_of_the_transcript():
     assert not at.exception, [str(e) for e in at.exception]
     assert any("Something went wrong while rendering" in e.value for e in at.error)
     assert any("This answer is fine." in m.value for m in at.markdown)
+
+
+# ---------------------------------------------------------------------------
+# AI chart caption (Task C3)
+# ---------------------------------------------------------------------------
+
+
+def _chartable_answer():
+    """A stored turn whose result auto-selects to a bar chart, so a caption renders."""
+    import pandas as pd
+
+    answer = _seeded_answer(pd.DataFrame({
+        "region": ["Asia", "Europe", "Africa"],
+        "total_revenue": [7594.0, 706.0, 803.0],
+    }))
+    answer["question"] = "What is total revenue by region?"
+    return answer
+
+
+def test_ai_chart_caption_is_llm_generated(monkeypatch):
+    """C3 requires the caption to come from the model. The pre-fix code printed
+    auto_select's hardcoded `reason` string, so assert the model's text is what
+    reaches the page and that the deterministic string is no longer the caption.
+    """
+    monkeypatch.setattr(
+        pipeline, "generate_chart_caption",
+        lambda *args, **kwargs: ("Asia contributes over ten times Europe's revenue.", "groq"),
+    )
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    at.session_state["turns"] = [_chartable_answer()]
+    at.run()
+
+    assert not at.exception, [str(e) for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+
+    captions = [c.value for c in at.caption]
+    assert any("Asia contributes over ten times Europe's revenue." in c for c in captions)
+    assert any("caption by groq" in c for c in captions), "provider should be attributed"
+    # The string the hardcoded implementation used to print.
+    assert not any(
+        "shown as a bar chart" in c for c in captions
+    ), "the deterministic selection reason must no longer be the caption"
+
+
+def test_ai_chart_caption_is_generated_once_across_reruns(monkeypatch):
+    """The regression test for the real constraint here.
+
+    Streamlit re-executes the script on every widget interaction, so an uncached call
+    would fire a live request on every keystroke -- burning a rate-limited free tier,
+    not just time. The caption must survive a rerun from cache.
+    """
+    calls = []
+
+    def counting(*args, **kwargs):
+        calls.append(args)
+        return ("A caption.", "gemini")
+
+    monkeypatch.setattr(pipeline, "generate_chart_caption", counting)
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    at.session_state["turns"] = [_chartable_answer()]
+    at.run()
+    assert len(calls) == 1, "first render should generate the caption"
+
+    at.run()  # a plain rerun, as any widget interaction would cause
+    assert len(calls) == 1, f"rerun must reuse the cached caption, got {len(calls)} calls"
+    assert not at.exception, [str(e) for e in at.exception]
+
+
+def test_overriding_the_chart_type_regenerates_the_caption(monkeypatch):
+    """The flip side: a caption describing a bar chart is wrong once the user picks a
+    line, so the cache is keyed on chart type rather than on the answer alone.
+    """
+    calls = []
+
+    def counting(question, chart_type, *args, **kwargs):
+        calls.append(chart_type)
+        return (f"Caption for a {chart_type}.", "gemini")
+
+    monkeypatch.setattr(pipeline, "generate_chart_caption", counting)
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    at.session_state["turns"] = [_chartable_answer()]
+    at.run()
+    assert calls == ["bar"]
+
+    at.session_state["chart_type_0"] = "line"
+    at.run()
+
+    assert calls == ["bar", "line"]
+    assert any("Caption for a line." in c.value for c in at.caption)
+
+
+def test_caption_failure_falls_back_instead_of_losing_the_answer(monkeypatch):
+    """A provider outage must not cost the reader the narrative and the chart. The
+    per-turn guard would catch the raise, but trading a whole answer for a decorative
+    sentence is the wrong outcome -- so this is handled where it happens.
+    """
+    def boom(*args, **kwargs):
+        raise RuntimeError("both providers failed")
+
+    monkeypatch.setattr(pipeline, "generate_chart_caption", boom)
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    at.session_state["turns"] = [_chartable_answer()]
+    at.run()
+
+    assert not at.exception, [str(e) for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+    # The answer survives intact, and the caption degrades to the deterministic reason.
+    assert any("Some products cost more than 500." in m.value for m in at.markdown)
+    assert any("shown as a bar chart" in c.value for c in at.caption)
