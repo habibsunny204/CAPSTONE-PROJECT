@@ -2,121 +2,121 @@
   {
     "id": "simple_agg_1",
     "category": "simple_aggregation",
-    "question": "What is the total sales across all orders?",
-    "reference_sql": "SELECT SUM(sales) FROM superstore",
-    "ground_truth": 12642905,
-    "notes": "Sum over all 51,290 rows of the cleaned dataset."
+    "question": "What is the total revenue across all transactions?",
+    "reference_sql": "SELECT SUM(total_revenue) FROM ecommerce_sales",
+    "ground_truth": 641236847.45,
+    "notes": "Sum over all 500,000 rows of the cleaned dataset."
   },
   {
     "id": "simple_agg_2",
     "category": "simple_aggregation",
-    "question": "How many unique orders were placed?",
-    "reference_sql": "SELECT COUNT(DISTINCT order_id) FROM superstore",
-    "ground_truth": 25035,
-    "notes": "Distinct order_id count, not row count (a single order can span multiple line-item rows)."
+    "question": "How many unique customers are there?",
+    "reference_sql": "SELECT COUNT(DISTINCT customer_id_hash) FROM ecommerce_sales",
+    "ground_truth": 98348,
+    "notes": "Distinct customers, not row count -- 500,000 transactions come from 98,348 customers, so a system that answers 500000 has counted rows instead of customers. Also checks that the hashed PII column is still usable for distinct-count analytics."
   },
   {
     "id": "simple_agg_3",
     "category": "simple_aggregation",
-    "question": "What is the average discount given across all orders?",
-    "reference_sql": "SELECT AVG(discount) FROM superstore",
-    "ground_truth": 0.1429,
-    "notes": "discount is stored as a fraction (0-1), not a percentage. Rounded to 4 decimal places."
+    "question": "What is the average discount given across all transactions?",
+    "reference_sql": "SELECT AVG(discount_pct) FROM ecommerce_sales",
+    "ground_truth": 14.9736,
+    "notes": "discount_pct is stored as a percentage on a 0-30 scale, not a 0-1 fraction. Answer is ~14.97 (percent), not ~0.1497. Rounded to 4 decimal places."
   },
   {
     "id": "filtered_agg_1",
     "category": "filtered_aggregation",
-    "question": "What is the average profit for orders with more than 20% discount?",
-    "reference_sql": "SELECT AVG(profit) FROM superstore WHERE discount > 0.2",
-    "ground_truth": -71.92,
-    "notes": "Deliberately a negative number -- heavily discounted orders lose money on average in this dataset, a good check that the system doesn't silently clip/misreport negative results."
+    "question": "What is the average order value for transactions with more than 20% discount?",
+    "reference_sql": "SELECT AVG(total_revenue) FROM ecommerce_sales WHERE discount_pct > 20",
+    "ground_truth": 1133.06,
+    "notes": "The single highest-value question in this benchmark. It turns entirely on the percentage-vs-fraction unit of discount_pct: the correct filter (discount_pct > 20) matches 166,032 rows and averages 1133.06, while the plausible-but-wrong Superstore-style filter (discount_pct > 0.2) matches 496,574 rows and averages 1280.80. The two answers are far enough apart that scoring cannot confuse them."
   },
   {
     "id": "filtered_agg_2",
     "category": "filtered_aggregation",
-    "question": "What is the total sales in the West region for the Consumer segment?",
-    "reference_sql": "SELECT SUM(sales) FROM superstore WHERE region = 'West' AND segment = 'Consumer'",
-    "ground_truth": 362908,
-    "notes": "Two-condition filter, but both conditions on the same logical dimension (not yet the 'multi-condition' category below, which requires >=2 independently-sourced filters)."
+    "question": "What is the total revenue in Europe paid by credit card?",
+    "reference_sql": "SELECT SUM(total_revenue) FROM ecommerce_sales WHERE region = 'Europe' AND payment_method = 'Credit Card'",
+    "ground_truth": 21168942.26,
+    "notes": "Two-condition filter. Also checks value casing -- the stored value is 'Credit Card', not 'credit card' as phrased in the question."
   },
   {
     "id": "synonym_1",
     "category": "synonym_resolution",
     "question": "What is the total revenue by product category?",
-    "reference_sql": "SELECT category, SUM(sales) FROM superstore GROUP BY category ORDER BY 2 DESC",
-    "ground_truth": {"Technology": 4744691, "Furniture": 4110884, "Office Supplies": 3787330},
-    "notes": "'Revenue' -> sales, 'product category' -> category. Tests the synonym dictionary, not just column-name matching."
+    "reference_sql": "SELECT category, SUM(total_revenue) FROM ecommerce_sales GROUP BY category ORDER BY 2 DESC",
+    "ground_truth": {"Toys & Games": 80744353, "Books": 80590885, "Electronics": 80161407},
+    "notes": "'Revenue' -> total_revenue, 'product category' -> category. Tests the synonym dictionary, not just column-name matching. Top 3 of 8 categories; the spread across all 8 is under 1.2%, so ordering is tight but stable."
   },
   {
     "id": "synonym_2",
     "category": "synonym_resolution",
-    "question": "Which shipping method is used most often?",
-    "reference_sql": "SELECT ship_mode, COUNT(*) AS c FROM superstore GROUP BY ship_mode ORDER BY c DESC LIMIT 1",
-    "ground_truth": {"ship_mode": "Standard Class", "count": 30775},
-    "notes": "'Shipping method' -> ship_mode."
+    "question": "Which payment type is used most often?",
+    "reference_sql": "SELECT payment_method, COUNT(*) AS c FROM ecommerce_sales GROUP BY payment_method ORDER BY c DESC LIMIT 1",
+    "ground_truth": {"payment_method": "Bank Transfer", "count": 100622},
+    "notes": "'Payment type' -> payment_method. The five methods are near-uniform (99,622-100,622), so this checks ordering precision rather than a landslide winner."
   },
   {
     "id": "synonym_3",
     "category": "synonym_resolution",
-    "question": "What's the average freight cost per order?",
-    "reference_sql": "SELECT AVG(shipping_cost) FROM superstore",
-    "ground_truth": 26.38,
-    "notes": "'Freight cost' -> shipping_cost."
-  },
-  {
-    "id": "multi_filter_1",
-    "category": "multi_condition_filter",
-    "question": "What is the total profit for Technology products shipped via First Class in 2013?",
-    "reference_sql": "SELECT SUM(profit) FROM superstore WHERE category = 'Technology' AND ship_mode = 'First Class' AND year = 2013",
-    "ground_truth": 22130.13,
-    "notes": "Three independent filter conditions combined with AND."
-  },
-  {
-    "id": "multi_filter_2",
-    "category": "multi_condition_filter",
-    "question": "How many orders had a discount greater than 10% and resulted in a loss?",
-    "reference_sql": "SELECT COUNT(*) FROM superstore WHERE discount > 0.1 AND profit < 0",
-    "ground_truth": 11643,
-    "notes": "'Resulted in a loss' -> profit < 0. Tests that the system infers a numeric condition from a qualitative phrase."
-  },
-  {
-    "id": "multi_filter_3",
-    "category": "multi_condition_filter",
-    "question": "Compare total sales between the West and East regions.",
-    "reference_sql": "SELECT region, SUM(sales) FROM superstore WHERE region IN ('West', 'East') GROUP BY region",
-    "ground_truth": {"West": 725514, "East": 678834},
-    "notes": "West outsells East by 46,680. Tests a comparison framing rather than a single-value answer."
+    "question": "What's the average unit price per item?",
+    "reference_sql": "SELECT AVG(price) FROM ecommerce_sales",
+    "ground_truth": 502.73,
+    "notes": "'Unit price' -> price. Distinguishes price (per-unit list price) from total_revenue (the transaction total after quantity and discount) -- a system that answers ~1282 has picked the wrong column."
   },
   {
     "id": "synonym_multi_1",
     "category": "synonym_resolution",
-    "question": "What's the biggest sub-category by earnings?",
-    "reference_sql": "SELECT sub_category, SUM(profit) AS p FROM superstore GROUP BY sub_category ORDER BY p DESC LIMIT 1",
-    "ground_truth": {"sub_category": "Copiers", "profit": 258567.55},
-    "notes": "'Earnings' -> profit, combined with a top-1 ranking phrasing ('biggest ... by')."
+    "question": "Which continent brings in the most turnover?",
+    "reference_sql": "SELECT region, SUM(total_revenue) AS r FROM ecommerce_sales GROUP BY region ORDER BY r DESC LIMIT 1",
+    "ground_truth": {"region": "Asia", "revenue": 107415239},
+    "notes": "Two synonyms at once ('continent' -> region, 'turnover' -> total_revenue) plus a top-1 ranking phrasing. Regions are within 0.85% of each other, so the correct column must be summed exactly to get the ordering right."
+  },
+  {
+    "id": "multi_filter_1",
+    "category": "multi_condition_filter",
+    "question": "What is the total revenue for Electronics bought with PayPal in 2023?",
+    "reference_sql": "SELECT SUM(total_revenue) FROM ecommerce_sales WHERE category = 'Electronics' AND payment_method = 'PayPal' AND year = 2023",
+    "ground_truth": 7851681.09,
+    "notes": "Three independent filter conditions combined with AND, over 6,162 matching rows. The year filter exercises the derived year column (Task A3's derive_date_parts step), which does not exist in the raw CSV."
+  },
+  {
+    "id": "multi_filter_2",
+    "category": "multi_condition_filter",
+    "question": "How many transactions had a discount above 25% and an order value over 2000?",
+    "reference_sql": "SELECT COUNT(*) FROM ecommerce_sales WHERE discount_pct > 25 AND total_revenue > 2000",
+    "ground_truth": 14186,
+    "notes": "Two numeric conditions on different columns, and a second independent check on the percentage scale of discount_pct ('above 25%' -> > 25, not > 0.25)."
+  },
+  {
+    "id": "multi_filter_3",
+    "category": "multi_condition_filter",
+    "question": "Compare total revenue between Asia and Europe.",
+    "reference_sql": "SELECT region, SUM(total_revenue) FROM ecommerce_sales WHERE region IN ('Asia', 'Europe') GROUP BY region",
+    "ground_truth": {"Asia": 107415239, "Europe": 106871566},
+    "notes": "Asia leads Europe by 543,673 (0.51%). Tests a comparison framing rather than a single-value answer, and that a narrow gap is reported as narrow rather than overstated."
   },
   {
     "id": "out_of_scope_1",
     "category": "out_of_scope",
-    "question": "What will next quarter's sales be?",
+    "question": "What will next quarter's revenue be?",
     "reference_sql": null,
     "ground_truth": "unanswerable",
-    "notes": "Requires forecasting, not present in this dataset or system. Expect the system to decline/explain rather than invent a projected number."
+    "notes": "Requires forecasting, which is not present in this dataset or system. Expect the system to decline/explain rather than invent a projected number."
   },
   {
     "id": "out_of_scope_2",
     "category": "out_of_scope",
-    "question": "What is the CEO's name?",
+    "question": "Which supplier shipped each order, and what was the shipping cost?",
     "reference_sql": null,
     "ground_truth": "unanswerable",
-    "notes": "No such entity/column exists anywhere in the schema. Expect a clear 'not answerable from this data' response, not a hallucinated name."
+    "notes": "Deliberately schema-adjacent rather than absurd: supplier and shipping cost are entirely plausible e-commerce columns, and the previous dataset for this project actually had a shipping cost column, but neither exists here. Expect a clear 'not available in this data' response, not a hallucinated column or a silent substitution of price/total_revenue."
   },
   {
     "id": "out_of_scope_3",
     "category": "out_of_scope",
     "question": "Show me sales data for 2025.",
-    "reference_sql": "SELECT * FROM superstore WHERE year = 2025",
+    "reference_sql": "SELECT * FROM ecommerce_sales WHERE year = 2025",
     "ground_truth": "empty result (0 rows)",
-    "notes": "Unlike the two above, a valid SQL query CAN be generated here -- the dataset's actual year range is 2011-2014 (verified against the cleaned data), so the correct behavior is a graceful empty result, not a refusal and not fabricated rows."
+    "notes": "Unlike the two above, valid SQL CAN be generated here -- the dataset's actual range is 2022-01-01 to 2024-01-01 (verified against the cleaned data; 2024 is a single day, 676 rows), so the correct behavior is a graceful empty result, not a refusal and not fabricated rows."
   }
 ]
