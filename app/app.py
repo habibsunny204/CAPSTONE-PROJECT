@@ -712,7 +712,7 @@ def _render_anomaly_detection(llm_con, table_name: str, config: dict[str, Any],
         st.info("No numeric column in this dataset has IQR-based outliers.")
         return
 
-    controls = st.columns([2, 1, 1])
+    controls = st.columns([2, 1, 1], vertical_alignment="bottom")
     column = controls[0].selectbox(
         "Column to examine",
         [c["name"] for c in candidates],
