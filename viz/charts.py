@@ -63,6 +63,33 @@ def apply_theme(fig: go.Figure, config: dict[str, Any], title: str,
     return fig
 
 
+def _drop_incomplete_edge_periods(series: pd.DataFrame, date_col: str,
+                                  raw_dates: pd.Series, freq: str) -> pd.DataFrame:
+    """Drop the first/last resampled bucket if the underlying data doesn't span
+    that whole period.
+
+    A sidebar date-range filter routinely cuts a month off partway through (e.g.
+    "...-2024/01/01" leaves a single day in the January bucket). `resample` still
+    labels that bucket at the full calendar month, so its sum is a fraction of a
+    normal month's -- the line plunges toward zero right at the edge, which reads
+    as a real drop in revenue rather than the filter boundary it actually is.
+    Interior buckets are never touched: a real drop mid-series is real data.
+    """
+    if len(series) < 2:
+        return series
+    period_alias = freq[:-1] if freq.endswith("E") and len(freq) > 1 else freq
+    periods = series[date_col].dt.to_period(period_alias)
+    data_min, data_max = raw_dates.min(), raw_dates.max()
+    keep = pd.Series(True, index=series.index)
+    if data_min > periods.iloc[0].start_time:
+        keep.iloc[0] = False
+    if data_max < periods.iloc[-1].end_time:
+        keep.iloc[-1] = False
+    if not keep.any():
+        return series
+    return series[keep].reset_index(drop=True)
+
+
 def _prettify(name: str) -> str:
     """Turn a snake_case column name into a human-readable axis label."""
     return name.replace("_", " ").title()
@@ -109,6 +136,7 @@ def time_series(df: pd.DataFrame, config: dict[str, Any], freq: str = "ME") -> g
     colors = _colors(config)
 
     series = (df.set_index(date_col)[metrics].resample(freq).sum().reset_index())
+    series = _drop_incomplete_edge_periods(series, date_col, df[date_col], freq)
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     for i, metric in enumerate(metrics):
